@@ -1,0 +1,200 @@
+import { native, NativeLeaseStatus, NativeSeatlingClient } from './native';
+import {
+  ActivationResult,
+  EntitlementValue,
+  LeaseStatus,
+  LicenseStatusCode,
+  SeatlingConfig,
+} from './types';
+
+function convertNativeLeaseStatus(nativeStatus: NativeLeaseStatus): LeaseStatus {
+  let entitlements: Record<string, EntitlementValue> = {};
+  if (nativeStatus.entitlementsJson) {
+    try {
+      entitlements = JSON.parse(nativeStatus.entitlementsJson);
+    } catch {
+      entitlements = {};
+    }
+  }
+
+  return {
+    status: nativeStatus.status as LicenseStatusCode,
+    isAuthorized: nativeStatus.isAuthorized,
+    seatId: nativeStatus.seatId,
+    maskedKey: nativeStatus.maskedKey,
+    buyerEmail: nativeStatus.buyerEmail,
+    lastVerifiedAt: nativeStatus.lastVerifiedAtUnix
+      ? new Date(nativeStatus.lastVerifiedAtUnix * 1000).toISOString()
+      : undefined,
+    offlineExpiresAt: nativeStatus.offlineExpiresAtUnix
+      ? new Date(nativeStatus.offlineExpiresAtUnix * 1000).toISOString()
+      : undefined,
+    isWithinOfflineGrace: nativeStatus.isWithinOfflineGrace,
+    portalUrl: nativeStatus.portalUrl,
+    message: nativeStatus.message,
+    entitlements,
+  };
+}
+
+export class SeatlingClient {
+  private readonly nativeClient: NativeSeatlingClient;
+
+  constructor(config: SeatlingConfig) {
+    this.nativeClient = new native.SeatlingClientNative({
+      workspaceId: config.workspaceId,
+      productId: config.productId,
+      publicKeys: config.publicKeys,
+      appVersion: config.appVersion,
+      apiBaseUrl: config.apiBaseUrl,
+      heartbeatIntervalSeconds: config.heartbeatIntervalSeconds,
+      storageDir: config.storageDir,
+    });
+  }
+
+  /**
+   * Factory method conforming to HARDWARE_ANCHOR_V6.md §7.1.1 (Seatling::init).
+   * Creates client instance and immediately runs synchronous startup check.
+   */
+  public static init(config: SeatlingConfig): SeatlingClient {
+    const client = new SeatlingClient(config);
+    client.initialize();
+    return client;
+  }
+
+  /**
+   * Initializes the client synchronously on startup (< 1ms).
+   * Validates local hardware-sealed cache and begins background heartbeat if valid.
+   * Never blocks on network I/O.
+   */
+  public initialize(): LeaseStatus {
+    const raw = this.nativeClient.initialize();
+    return convertNativeLeaseStatus(raw);
+  }
+
+  /**
+   * Synchronous, sub-microsecond authorization check (< 0.01ms / ~50ns).
+   * Safe to call on high-frequency UI rendering or request handlers.
+   */
+  public isAuthorized(): boolean {
+    return this.nativeClient.isAuthorized();
+  }
+
+  /**
+   * Lock-free runtime query per HARDWARE_ANCHOR_V3 §7.4.1 (< 0.05ms atomic read).
+   * Safe to call on real-time rendering, high-frequency paint loops, or request handlers.
+   */
+  public isValid(): boolean {
+    return this.nativeClient.isValid();
+  }
+
+  /**
+   * Lock-free runtime status query per HARDWARE_ANCHOR_V3 §7.4.1.
+   */
+  public status(): LicenseStatusCode {
+    return this.nativeClient.status() as LicenseStatusCode;
+  }
+
+  /**
+   * Synchronous pre-flight query per HARDWARE_ANCHOR_V3 §7.4.1 (< 2ms cached, up to timeoutMs if sync needed).
+   * Verifies hardware-sealed keystore, clock tampering, and performs heartbeat if needed.
+   */
+  public isValidBlocking(timeoutMs: number = 8000): boolean {
+    return this.nativeClient.isValidBlocking(timeoutMs);
+  }
+
+  /**
+   * Synchronous pre-flight status query per HARDWARE_ANCHOR_V3 §7.4.1.
+   */
+  public statusBlocking(timeoutMs: number = 8000): LeaseStatus {
+    return convertNativeLeaseStatus(this.nativeClient.statusBlocking(timeoutMs));
+  }
+
+  /**
+   * Retrieves the 128-bit random hex process session ID.
+   */
+  public getSessionId(): string {
+    return this.nativeClient.getSessionId();
+  }
+
+  /**
+   * Retrieves an entitlement value with type-safe fallback.
+   */
+  public getEntitlement<T extends EntitlementValue>(key: string, defaultValue: T): T {
+    if (typeof defaultValue === 'boolean') {
+      return this.nativeClient.getEntitlementBool(key, defaultValue) as T;
+    } else if (typeof defaultValue === 'number') {
+      return this.nativeClient.getEntitlementNumber(key, defaultValue) as T;
+    } else if (typeof defaultValue === 'string') {
+      return this.nativeClient.getEntitlementString(key, defaultValue) as T;
+    }
+    return defaultValue;
+  }
+
+  public getEntitlementBool(key: string, defaultValue: boolean = false): boolean {
+    return this.nativeClient.getEntitlementBool(key, defaultValue);
+  }
+
+  public getEntitlementNumber(key: string, defaultValue: number = 0): number {
+    return this.nativeClient.getEntitlementNumber(key, defaultValue);
+  }
+
+  public getEntitlementString(key: string, defaultValue: string = ''): string {
+    return this.nativeClient.getEntitlementString(key, defaultValue);
+  }
+
+  /**
+   * Returns current lease snapshot and status.
+   */
+  public getStatus(): LeaseStatus {
+    return convertNativeLeaseStatus(this.nativeClient.getStatus());
+  }
+
+  /**
+   * Activates a license key with Proof-of-Possession signed by the hardware-sealed keystore.
+   */
+  public async activate(licenseKey: string): Promise<ActivationResult> {
+    const res = this.nativeClient.activate(licenseKey.trim());
+    return {
+      success: res.success,
+      status: res.status as LicenseStatusCode,
+      message: res.message,
+      seatId: res.seatId,
+      portalUrl: res.portalUrl,
+      buyerEmail: res.buyerEmail,
+      seatsActive: res.seatsActive,
+      seatLimit: res.seatLimit,
+      leaseStatus: res.leaseStatus ? convertNativeLeaseStatus(res.leaseStatus) : undefined,
+      token: res.token,
+    };
+  }
+
+  /**
+   * Triggers an immediate 1-RTT mutual-challenge heartbeat in the background.
+   */
+  public async heartbeatNow(): Promise<LeaseStatus> {
+    return convertNativeLeaseStatus(this.nativeClient.heartbeatNow());
+  }
+
+  /**
+   * Triggers a heartbeat with explicit timeout in milliseconds.
+   */
+  public async heartbeatWithTimeout(timeoutMs: number = 8000): Promise<LeaseStatus> {
+    return convertNativeLeaseStatus(this.nativeClient.heartbeatWithTimeout(timeoutMs));
+  }
+
+  /**
+   * Gracefully releases seat allocation with server-echoed nonce signature.
+   */
+  public async deactivate(): Promise<boolean> {
+    return this.nativeClient.deactivate();
+  }
+
+  /**
+   * Stops background heartbeat scheduler and flushes state.
+   */
+  public shutdown(): void {
+    this.nativeClient.shutdown();
+  }
+}
+
+export const Seatling = SeatlingClient;

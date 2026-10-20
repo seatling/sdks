@@ -1,0 +1,44 @@
+{
+  "name": "@seatling/node",
+  "version": "1.0.0",
+  "description": "Seatling Client SDK for Node.js and Electron with Zero-Prompt Ed25519 Hardware Anchoring",
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "files": [
+    "dist",
+    "seatling.node",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "copy:native": "node scripts/copy-native.js",
+    "build:native": "cargo build --release -p seatling-node && node scripts/copy-native.js",
+    "build": "node scripts/copy-native.js && tsc",
+    "watch": "tsc --watch",
+    "test": "node scripts/copy-native.js && tsc && node --test dist/test/*.test.js",
+    "test:unit": "node scripts/copy-native.js && tsc && node --test dist/test/hwid.test.js dist/test/keystore.test.js",
+    "test:network": "node scripts/copy-native.js && tsc && node --test dist/test/client.network.test.js",
+    "test:edge": "node scripts/copy-native.js && tsc && node --test dist/test/client.edge.test.js",
+    "test:e2e": "node scripts/copy-native.js && tsc && node --test dist/test/client.test.js dist/test/client.network.test.js dist/test/client.edge.test.js",
+    "lint": "tsc --noEmit",
+    "clean": "node -e \"const fs = require('fs'); fs.rmSync('dist', { recursive: true, force: true });\""
+  },
+  "keywords": [
+    "seatling",
+    "licensing",
+    "ed25519",
+    "hardware-anchor",
+    "electron",
+    "hwid",
+    "license-client"
+  ],
+  "author": "Seatling Architecture Team",
+  "license": "BUSL-1.1",
+  "devDependencies": {
+    "@types/node": "^22.7.5",
+    "typescript": "^5.6.3"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

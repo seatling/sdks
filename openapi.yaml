@@ -1,0 +1,498 @@
+openapi: 3.1.0
+info:
+  title: Seatling Client License API
+  description: |
+    Language-agnostic client-facing licensing and seat management API for the Seatling platform.
+    Adheres to the Zero-Prompt Ed25519 Hybrid Hardware Anchor Architecture (HARDWARE_ANCHOR_V7.md).
+    Features RFC 7519 / RFC 8037 EdDSA (Ed25519) JSON Web Tokens for Proof-of-Possession seat activation,
+    1-RTT Mutual-Challenge Heartbeats with echoed nonces, and Hardened Bidirectional Self-Healing.
+  version: 1.0.0
+  contact:
+    name: Seatling Architecture Team
+    url: https://seatling.com
+  license:
+    name: Business Source License 1.1
+    identifier: BUSL-1.1
+
+servers:
+  - url: https://api.seatling.com
+    description: Production API Gateway
+  - url: https://api-staging.seatling.com
+    description: Staging Environment
+
+security:
+  - SeatlingHardwareAnchorAuth: []
+
+paths:
+  /v1/licenses/activate:
+    post:
+      summary: Activate Machine Seat
+      description: |
+        Activates a machine seat on an active license using a cryptographic Proof-of-Possession (PoP) JWT (typ: seatling-activate-pop+jwt).
+        Supports Hardened Bidirectional Self-Healing:
+        - Case A (App Reinstall / Cache Clear): If the 4-component HWID matches an existing seat (weighted score >= 70: mobo 35, cpu 25, disk 20, os_uuid 20)
+          and passes the 30-day rotation quota, the seat's public key is rotated in-place (0 seats burned).
+        - Case B (Hardware / OS Upgrade): If the device holds a valid hardware-sealed Ed25519 key matching an existing seat,
+          the HWID components are updated in-place without consuming a seat.
+      operationId: activateLicenseSeat
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ActivationTokenRequest'
+      responses:
+        '200':
+          description: 'Machine seat activated or self-healed successfully. Returns Server-Signed License JWT (typ: seatling-license+jwt).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActivationTokenResponse'
+        '400':
+          description: Invalid activation request (bad timestamp, malformed HWID, or invalid PoP JWT).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Seats exhausted, version ceiling exceeded, or key revoked.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/SeatsExhaustedResponse'
+                  - $ref: '#/components/schemas/VersionNotEntitledResponse'
+                  - $ref: '#/components/schemas/KeyRevokedResponse'
+        '404':
+          description: License key not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Requires customer portal deactivation (concurrent active session detected or rotation quota exceeded).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequiresPortalDeactivationResponse'
+
+  /v1/licenses/heartbeat:
+    post:
+      summary: 1-RTT Mutual-Challenge Heartbeat
+      description: |
+        Performs a single-round-trip mutual challenge heartbeat using RFC 8037 EdDSA JWTs.
+        1. The client signs a challenge JWT (typ: seatling-heartbeat-challenge+jwt) embedding session_id, app_version, and a random jti nonce.
+        2. The server verifies the signature, session_id, app_version, and timestamp (+-5m), updates seat.last_heartbeat_at.
+        3. The server responds with a 200 OK containing an acknowledgment JWT (typ: seatling-heartbeat-ack+jwt) counter-signed by the workspace Ed25519 key (matching client supported_kids) that echoes the client's jti nonce.
+      operationId: heartbeatLicenseSeat
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HeartbeatTokenRequest'
+      responses:
+        '200':
+          description: Heartbeat accepted. Returns server-signed Heartbeat Acknowledgment JWT echoing nonce.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HeartbeatTokenResponse'
+        '400':
+          description: Invalid heartbeat payload or expired timestamp.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Heartbeat verification failed (device signature invalid or seat key mismatch).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Version not entitled, key revoked, or license suspended/revoked.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/VersionNotEntitledResponse'
+                  - $ref: '#/components/schemas/KeyRevokedResponse'
+                  - $ref: '#/components/schemas/LicenseSuspendedResponse'
+        '409':
+          description: Seat requires customer portal deactivation (concurrent use anomaly detected).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequiresPortalDeactivationResponse'
+
+  /v1/licenses/deactivate:
+    post:
+      summary: Deactivate Machine Seat
+      description: Explicitly releases the allocated machine seat slot.
+      operationId: deactivateLicenseSeat
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeactivationRequest'
+      responses:
+        '200':
+          description: Seat successfully released.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeactivationResponse'
+        '400':
+          description: Invalid signature or unknown seat.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  securitySchemes:
+    SeatlingHardwareAnchorAuth:
+      type: apiKey
+      in: header
+      name: X-Seatling-Device-Proof
+      description: Optional device identity header. Primary authentication occurs cryptographically within request payloads.
+
+  schemas:
+    AttestationTier:
+      type: string
+      enum:
+        - hardware_sealed
+        - software
+      description: Attestation protection level of the private key.
+
+    HWIDComponents:
+      type: object
+      required:
+        - cpu
+        - mobo
+        - disk
+        - os_uuid
+      properties:
+        cpu:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+          example: 'a6c98f8e7b9d4213c41fa2f05b1c94d0c15ef102e3b8a1c94d0c15ef102e3b8a'
+        mobo:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+          example: 'b1c94d0c15ef102e3b8aa6c98f8e7b9d4213c41fa2f05b1c94d0c15ef102e3b8'
+        disk:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+          example: 'c41fa2f05b1c94d0c15ef102e3b8aa6c98f8e7b9d4213c41fa2f05b1c94d0c15'
+        os_uuid:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+          example: 'd0c15ef102e3b8aa6c98f8e7b9d4213c41fa2f05b1c94d0c15ef102e3b8ac41f'
+
+    ActivationPopClaims:
+      type: object
+      required:
+        - iss
+        - sub
+        - aud
+        - hwid
+        - hwid_components
+        - app_version
+        - attestation_tier
+        - iat
+        - jti
+        - supported_kids
+      properties:
+        iss:
+          type: string
+          description: Base64-encoded device public key.
+        sub:
+          type: string
+          description: License key.
+        aud:
+          type: string
+          description: API endpoint URL.
+        hwid:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        hwid_components:
+          $ref: '#/components/schemas/HWIDComponents'
+        app_version:
+          type: string
+          example: '2.4.1'
+        attestation_tier:
+          $ref: '#/components/schemas/AttestationTier'
+        iat:
+          type: integer
+          format: int64
+        jti:
+          type: string
+        supported_kids:
+          type: array
+          items:
+            type: string
+          description: List of key IDs (kids) trusted by the client binary, sorted lexicographically.
+          example: ["prod_synth_2026_v1", "prod_synth_2027_v1"]
+
+    HeartbeatChallengeClaims:
+      type: object
+      required:
+        - iss
+        - sub
+        - aud
+        - seat_id
+        - hwid
+        - session_id
+        - app_version
+        - iat
+        - jti
+        - supported_kids
+      properties:
+        iss:
+          type: string
+          description: Base64-encoded device public key.
+        sub:
+          type: string
+          description: License key.
+        aud:
+          type: string
+          description: API endpoint URL.
+        seat_id:
+          type: string
+          description: Seat ID allocated to this machine.
+        hwid:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        session_id:
+          type: string
+          description: 128-bit random process session ID.
+        app_version:
+          type: string
+          example: '2.4.1'
+        iat:
+          type: integer
+          format: int64
+        jti:
+          type: string
+          description: Random challenge nonce.
+        supported_kids:
+          type: array
+          items:
+            type: string
+          description: List of key IDs (kids) trusted by the client binary, sorted lexicographically.
+          example: ["prod_synth_2026_v1"]
+
+    ActivationTokenRequest:
+      type: object
+      required:
+        - token
+      properties:
+        token:
+          type: string
+          description: RFC 7519 / RFC 8037 EdDSA JWT signed by client DevicePrivateKey with typ 'seatling-activate-pop+jwt'.
+          example: 'eyJhbGciOiJFZERTQSI...eyJpc3MiOiJkZXZpY2V...sig'
+        claims:
+          $ref: '#/components/schemas/ActivationPopClaims'
+          description: Documentation schema of the claims payload encoded inside token.
+
+    ActivationTokenResponse:
+      type: object
+      required:
+        - token
+      properties:
+        token:
+          type: string
+          description: RFC 7519 / RFC 8037 EdDSA License JWT signed by workspace Ed25519 key (kid in header) with typ 'seatling-license+jwt'.
+          example: 'eyJhbGciOiJFZERTQSI...eyJpc3MiOiJzZWF0bGluZy...sig'
+
+    HeartbeatTokenRequest:
+      type: object
+      required:
+        - token
+      properties:
+        token:
+          type: string
+          description: RFC 7519 / RFC 8037 EdDSA JWT signed by client DevicePrivateKey with typ 'seatling-heartbeat-challenge+jwt'.
+          example: 'eyJhbGciOiJFZERTQSI...eyJpc3MiOiJkZXZpY2V...sig'
+        claims:
+          $ref: '#/components/schemas/HeartbeatChallengeClaims'
+          description: Documentation schema of the challenge claims payload encoded inside token.
+
+    HeartbeatTokenResponse:
+      type: object
+      required:
+        - token
+      properties:
+        token:
+          type: string
+          description: RFC 7519 / RFC 8037 EdDSA JWT signed by workspace Ed25519 key (kid in header matching client supported_kids) with typ 'seatling-heartbeat-ack+jwt' echoing client jti nonce.
+          example: 'eyJhbGciOiJFZERTQSI...eyJpc3MiOiJzZWF0bGluZy...sig'
+
+    KeyRevokedResponse:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          enum: [KEY_REVOKED_UPDATE_REQUIRED]
+          example: 'KEY_REVOKED_UPDATE_REQUIRED'
+        message:
+          type: string
+          example: 'The signing key for this build has been revoked. Please update your application.'
+        portal_url:
+          type: string
+          format: uri
+          description: Customer portal URL to download an updated build.
+          example: 'https://portal.seatling.com/updates'
+
+    VersionNotEntitledResponse:
+      type: object
+      required:
+        - code
+        - message
+        - portal_url
+      properties:
+        code:
+          type: string
+          enum: [VERSION_NOT_ENTITLED]
+          example: 'VERSION_NOT_ENTITLED'
+        message:
+          type: string
+          example: 'License is not entitled to run app version 3.0.0. Allowed version range: 2.x.'
+        portal_url:
+          type: string
+          format: uri
+          description: Customer portal URL to purchase an upgrade or download an entitled build.
+          example: 'https://portal.seatling.com/licenses/lic_.../upgrade'
+
+    DeactivationRequest:
+      type: object
+      required:
+        - key
+        - seat_id
+        - hwid
+        - nonce
+        - timestamp
+        - signature
+      properties:
+        key:
+          type: string
+          example: 'SEAT-9F2A-4B8C-7E1D-3A5F'
+        seat_id:
+          type: string
+          example: 'seat_01j8k9m0n1p2q3r4s5t6u7v8w9'
+        hwid:
+          type: string
+          example: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
+        nonce:
+          type: string
+          example: 'deact_nonce_1234567890'
+        timestamp:
+          type: integer
+          format: int64
+          example: 1729382500
+        signature:
+          type: string
+          format: byte
+          description: Ed25519 signature over 'seatling:deactivate:v1|<key>|<seat_id>|<hwid>|<nonce>|<timestamp>'
+
+    DeactivationResponse:
+      type: object
+      required:
+        - success
+        - message
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: 'Seat successfully deactivated'
+
+    SeatsExhaustedResponse:
+      type: object
+      required:
+        - error
+        - message
+        - portal_url
+        - seats_active
+        - seat_limit
+      properties:
+        error:
+          type: string
+          enum: [SEATS_EXHAUSTED]
+          example: 'SEATS_EXHAUSTED'
+        message:
+          type: string
+          example: 'All allocated machine seats for this license are currently in use.'
+        portal_url:
+          type: string
+          format: uri
+          description: Static customer portal URL to manage or revoke existing machine seats.
+          example: 'https://portal.seatling.com'
+        buyer_email:
+          type: string
+          description: Masked buyer email address hint (e.g. b***@gmail.com). Magic link is emailed directly here.
+          example: 'b***@gmail.com'
+        seats_active:
+          type: integer
+          example: 2
+        seat_limit:
+          type: integer
+          example: 2
+
+    RequiresPortalDeactivationResponse:
+      type: object
+      required:
+        - error
+        - message
+        - portal_url
+      properties:
+        error:
+          type: string
+          enum: [REQUIRES_PORTAL_DEACTIVATION]
+          example: 'REQUIRES_PORTAL_DEACTIVATION'
+        message:
+          type: string
+          example: 'Seat self-healing blocked due to key rotation quota reached or seat lock.'
+        portal_url:
+          type: string
+          format: uri
+          description: Static customer portal URL to manage or revoke existing machine seats.
+          example: 'https://portal.seatling.com'
+        buyer_email:
+          type: string
+          description: Masked buyer email address hint (e.g. b***@gmail.com). Magic link is emailed directly here.
+          example: 'b***@gmail.com'
+
+    LicenseSuspendedResponse:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          enum: [LICENSE_SUSPENDED_OR_REVOKED]
+          example: 'LICENSE_SUSPENDED_OR_REVOKED'
+        message:
+          type: string
+          example: 'License has been suspended or revoked by the workspace administrator.'
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          example: 'INVALID_SIGNATURE'
+        message:
+          type: string
+          example: 'The provided Ed25519 signature failed cryptographic verification.'

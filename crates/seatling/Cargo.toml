@@ -1,0 +1,43 @@
+[package]
+name = "seatling"
+version = "0.1.0"
+edition = "2021"
+authors = ["Seatling Architecture Team"]
+description = "Seatling Client SDK with Zero-Prompt Ed25519 Hardware Anchoring"
+license = "BUSL-1.1"
+repository = "https://github.com/seatling/seatling-sdks"
+keywords = ["seatling", "licensing", "ed25519", "hwid", "drm"]
+categories = ["cryptography", "api-bindings"]
+publish = false
+
+[lib]
+name = "seatling"
+crate-type = ["rlib", "staticlib", "cdylib"]
+
+[dependencies]
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+rand = "0.8"
+aes-gcm = "0.10"
+hkdf = "0.12"
+sha2 = "0.10"
+arc-swap = "1.7"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+base64 = "0.22"
+hex = "0.4"
+ureq = { version = "2.10", features = ["json"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Security_Cryptography",
+    "Win32_System_SystemInformation",
+    "Win32_System_Registry",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
