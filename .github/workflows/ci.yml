@@ -4,9 +4,23 @@ on:
   push:
     branches:
       - main
+    paths:
+      - Cargo.lock
+      - package.json
+      - package-lock.json
+      - openapi.yaml
+      - crates/**
+      - .github/workflows/ci.yml
   pull_request:
     branches:
       - main
+    paths:
+      - Cargo.lock
+      - package.json
+      - package-lock.json
+      - openapi.yaml
+      - crates/**
+      - .github/workflows/ci.yml
 
 permissions:
   contents: read
