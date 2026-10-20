@@ -343,7 +343,13 @@ impl HardwareSealedKeystore {
         let anchors = HWIDCollector::sealing_anchors();
 
         let mut secret32 = [0u8; 32];
+        #[cfg(target_os = "windows")]
         OsRng.fill_bytes(&mut secret32);
+
+        #[cfg(not(target_os = "windows"))]
+        if self.tier == AttestationTier::Software {
+            OsRng.fill_bytes(&mut secret32);
+        }
 
         #[allow(unused_mut)]
         let mut dpapi_blob = None;
