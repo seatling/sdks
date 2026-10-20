@@ -1,0 +1,126 @@
+name: CI (Multi-Platform Build & Test)
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  openapi-lint:
+    name: Lint OpenAPI & BSL License
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Lint openapi.yaml
+        run: npx --yes @redocly/cli lint openapi.yaml
+
+      - name: Validate BSL License Change Dates
+        run: node scripts/stamp-license-date.js --check
+
+  rust-workspace:
+    name: Rust Core / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Rustfmt Check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy Linter
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Run Core Tests
+        run: cargo test --workspace
+
+  node-sdk:
+    name: Node SDK / ${{ matrix.os }} (Node ${{ matrix.node-version }})
+    runs-on: ${{ matrix.os }}
+    needs: [rust-workspace]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node-version: [lts/*]
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Seatling Native Node Addon
+        run: cargo build --release -p seatling-node
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+          cache-dependency-path: crates/seatling-node/package.json
+
+      - name: Install Node Dependencies
+        working-directory: crates/seatling-node
+        run: npm install
+
+      - name: Lint TypeScript
+        working-directory: crates/seatling-node
+        run: npm run lint
+
+      - name: Run Node Test Suite (Unit, Network, Edge & E2E)
+        working-directory: crates/seatling-node
+        run: npm test
+
+  cpp-sdk:
+    name: C++ SDK / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    needs: [rust-workspace]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Seatling Rust Staticlib
+        run: cargo build --release -p seatling
+
+      - name: Setup CMake
+        uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: "3.28.x"
+
+      - name: Configure CMake
+        run: cmake -B build -S crates/seatling
+
+      - name: Build C++ Test Suite & Example
+        run: cmake --build build --config Release
+
+      - name: Run CTest Suite (Against Rust Staticlib)
+        run: ctest --test-dir build -C Release --output-on-failure

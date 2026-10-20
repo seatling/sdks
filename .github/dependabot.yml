@@ -1,0 +1,22 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    assignees:
+      - stfsy
+    directory: /
+    schedule:
+      interval: monthly
+
+  - package-ecosystem: npm
+    assignees:
+      - stfsy
+    directory: /crates/seatling-node
+    schedule:
+      interval: monthly
+
+  - package-ecosystem: github-actions
+    assignees:
+      - stfsy
+    directory: /
+    schedule:
+      interval: monthly
