@@ -466,6 +466,7 @@ fn test_dpapi_keystore_sealing_and_tamper_rejection() {
     let content = storage
         .read_keystore()
         .expect("keystore must exist on disk");
+    #[allow(unused_mut)]
     let mut stored: seatling::types::StoredKeystoreFile =
         serde_json::from_str(&content).expect("parse stored keystore");
 
