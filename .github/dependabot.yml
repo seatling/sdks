@@ -6,6 +6,12 @@ updates:
     directory: /
     schedule:
       interval: monthly
+    groups:
+      # Dependabot's dependency-type (development/production) grouping is not supported for cargo;
+      # grouping all crates into one PR.
+      cargo:
+        patterns:
+          - "*"
 
   - package-ecosystem: npm
     assignees:
@@ -13,6 +19,11 @@ updates:
     directory: /crates/seatling-node
     schedule:
       interval: monthly
+    groups:
+      dev-dependencies:
+        dependency-type: development
+      prod-dependencies:
+        dependency-type: production
 
   - package-ecosystem: github-actions
     assignees:
@@ -20,3 +31,7 @@ updates:
     directory: /
     schedule:
       interval: monthly
+    groups:
+      github-actions:
+        patterns:
+          - "*"
