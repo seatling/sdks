@@ -9,7 +9,7 @@ static CACHED_COMPONENTS: OnceLock<HWIDComponents> = OnceLock::new();
 fn sha256_hex(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(data);
-    format!("{:x}", hasher.finalize())
+    hex::encode(hasher.finalize())
 }
 
 pub struct HWIDCollector;

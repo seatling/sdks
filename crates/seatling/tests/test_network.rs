@@ -47,6 +47,7 @@ impl MockHttpServer {
             while !s_clone.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
+                        let _ = stream.set_nonblocking(false);
                         let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
                         let mut buffer = Vec::new();
                         let mut chunk = [0u8; 1024];
@@ -123,6 +124,7 @@ impl MockHttpServer {
 
                         let _ = stream.write_all(response.as_bytes());
                         let _ = stream.flush();
+                        let _ = stream.shutdown(std::net::Shutdown::Write);
                     }
                     Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(5));

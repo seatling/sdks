@@ -12,8 +12,6 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use hkdf::Hkdf;
-use rand::rngs::OsRng;
-use rand::RngCore;
 use sha2::Sha256;
 use std::time::Duration;
 
@@ -150,7 +148,7 @@ impl HardwareSealedKeystore {
 
         // Generate fresh keypair
         let mut seed = [0u8; 32];
-        OsRng.fill_bytes(&mut seed);
+        rand::fill(&mut seed);
         let signing_key = SigningKey::from_bytes(&seed);
         let verifying_key = signing_key.verifying_key();
         let now_utc = Self::current_unix_time();
@@ -249,9 +247,9 @@ impl HardwareSealedKeystore {
             aad: &aad,
         };
 
-        let nonce = Nonce::from_slice(&iv);
+        let nonce = Nonce::try_from(iv.as_slice()).map_err(|_| "invalid nonce")?;
         let mut decrypted = cipher
-            .decrypt(nonce, payload)
+            .decrypt(&nonce, payload)
             .map_err(|_| "decrypt failed")?;
 
         let res = KeystoreRecord::from_bytes(&decrypted);
@@ -344,11 +342,11 @@ impl HardwareSealedKeystore {
 
         let mut secret32 = [0u8; 32];
         #[cfg(target_os = "windows")]
-        OsRng.fill_bytes(&mut secret32);
+        rand::fill(&mut secret32);
 
         #[cfg(not(target_os = "windows"))]
         if self.tier == AttestationTier::Software {
-            OsRng.fill_bytes(&mut secret32);
+            rand::fill(&mut secret32);
         }
 
         #[allow(unused_mut)]
@@ -383,8 +381,8 @@ impl HardwareSealedKeystore {
         zeroize_slice(&mut wrapping_key);
 
         let mut iv = [0u8; 12];
-        OsRng.fill_bytes(&mut iv);
-        let nonce = Nonce::from_slice(&iv);
+        rand::fill(&mut iv);
+        let nonce = Nonce::from(iv);
 
         let mut raw_record = self.record.to_bytes();
         let pub_key_b64 = BASE64.encode(self.verifying_key.as_bytes());
@@ -395,7 +393,7 @@ impl HardwareSealedKeystore {
             aad: &aad,
         };
 
-        let encrypted = cipher.encrypt(nonce, payload);
+        let encrypted = cipher.encrypt(&nonce, payload);
         zeroize_slice(&mut raw_record);
 
         if let Ok(ciphertext_with_tag) = encrypted {
