@@ -221,7 +221,7 @@ impl HardwareSealedKeystore {
             }
         }
 
-        #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+        #[cfg(not(target_os = "windows"))]
         {
             if stored.tier == AttestationTier::Software {
                 if let Some(ref sw_b64) = stored.sw_secret {
@@ -345,6 +345,7 @@ impl HardwareSealedKeystore {
         let mut secret32 = [0u8; 32];
         OsRng.fill_bytes(&mut secret32);
 
+        #[allow(unused_mut)]
         let mut dpapi_blob = None;
         let mut sw_secret = None;
 
@@ -359,7 +360,7 @@ impl HardwareSealedKeystore {
             }
         }
 
-        #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+        #[cfg(not(target_os = "windows"))]
         {
             if self.tier == AttestationTier::Software {
                 sw_secret = Some(BASE64.encode(secret32));

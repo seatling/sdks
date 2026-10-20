@@ -1,4 +1,6 @@
-use super::{normalize, PlatformIdentifiers, SealingAnchors};
+use super::normalize;
+#[cfg(target_os = "windows")]
+use super::{PlatformIdentifiers, SealingAnchors};
 
 #[derive(Default, Debug)]
 pub struct SmbiosInfo {

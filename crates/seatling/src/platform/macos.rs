@@ -2,12 +2,15 @@ use super::{normalize, PlatformIdentifiers, SealingAnchors};
 
 #[cfg(target_os = "macos")]
 mod iokit {
-    use core_foundation::base::{CFRelease, CFTypeRef, TCFType};
+    use core_foundation::base::{CFTypeRef, TCFType};
     use core_foundation::string::{CFString, CFStringRef};
     use std::ffi::c_void;
 
+    #[allow(non_camel_case_types)]
     type io_service_t = u32;
+    #[allow(non_camel_case_types)]
     type io_object_t = u32;
+    #[allow(non_camel_case_types)]
     type mach_port_t = u32;
 
     #[link(name = "IOKit", kind = "framework")]
@@ -28,7 +31,7 @@ mod iokit {
 
     pub fn get_iokit_property(property_name: &str) -> Option<String> {
         unsafe {
-            let matching = IOServiceMatching(b"IOPlatformExpertDevice\0".as_ptr() as *const _);
+            let matching = IOServiceMatching(c"IOPlatformExpertDevice".as_ptr() as *const _);
             if matching.is_null() {
                 return None;
             }
@@ -103,7 +106,7 @@ pub fn collect_macos() -> PlatformIdentifiers {
         // Disk volume UUID using absolute binary path
         let mut disk = None;
         if let Ok(output) = Command::new("/usr/sbin/diskutil")
-            .args(&["info", "/"])
+            .args(["info", "/"])
             .output()
         {
             let text = String::from_utf8_lossy(&output.stdout);
