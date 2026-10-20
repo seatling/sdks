@@ -149,7 +149,7 @@ impl SeatlingClient {
         };
 
         let current_hwid = HWIDCollector::get_hwid();
-        let (clock_status, device_vk, rev_status, rev_context) = {
+        let (mut clock_status, device_vk, rev_status, rev_context) = {
             let ks = self.keystore.lock().unwrap_or_else(|e| e.into_inner());
             (
                 ks.evaluate_clock_and_grace(now_utc),
@@ -273,6 +273,26 @@ impl SeatlingClient {
                     LocalHint::RevocationPersisted(persisted_code),
                     Some(claims),
                 );
+            }
+        }
+
+        // If keystore has not yet been initialized with offline grace (0 duration)
+        // and a valid, verified offline lease exists on disk, initialize the authoritative
+        // keystore timeline from the signed token's iat and offline_grace_days.
+        let ks_grace = {
+            self.keystore
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .record()
+                .grace_duration_seconds
+        };
+        if ks_grace == 0 {
+            let grace_days = claims.offline_grace_days.unwrap_or(0);
+            if grace_days > 0 {
+                let grace_duration = grace_days.max(0) * 86400;
+                let mut ks = self.keystore.lock().unwrap_or_else(|e| e.into_inner());
+                ks.update_timeline(&self.storage, claims.iat, grace_duration);
+                clock_status = ks.evaluate_clock_and_grace(now_utc);
             }
         }
 

@@ -111,6 +111,10 @@ jobs:
       - name: Build Seatling Rust Staticlib
         run: cargo build --release -p seatling
 
+      - name: Setup MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Setup CMake
         uses: jwlawson/actions-setup-cmake@v2
         with:
