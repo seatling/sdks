@@ -4,6 +4,13 @@
   "description": "Seatling Client SDK for Node.js and Electron with Zero-Prompt Ed25519 Hardware Anchoring",
   "main": "dist/src/index.js",
   "types": "dist/src/index.d.ts",
+  "publishConfig": {
+    "provenance": true
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/seatling/sdks.git"
+  },
   "files": [
     "dist",
     "seatling.node",
