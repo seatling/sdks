@@ -1,0 +1,167 @@
+name: Publish Release Assets & Packages
+
+on:
+  workflow_call:
+    inputs:
+      tag_name:
+        description: "Release git tag name (e.g., node-v1.1.0)"
+        required: true
+        type: string
+      version:
+        description: "Semantic version string (optional, e.g., 1.1.0)"
+        required: false
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Release git tag name to publish (e.g., node-v1.1.0)"
+        required: true
+        type: string
+      version:
+        description: "Semantic version string (optional, e.g., 1.1.0)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: publish-${{ inputs.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  build-release-assets:
+    name: Build / ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            node_name: seatling.win32-x64-msvc.node
+            artifact_name: seatling-windows-x64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            node_name: seatling.darwin-arm64.node
+            artifact_name: seatling-macos-arm64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            node_name: seatling.darwin-x64.node
+            artifact_name: seatling-macos-x64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            node_name: seatling.linux-x64-gnu.node
+            artifact_name: seatling-linux-x64
+
+    steps:
+      - name: Checkout Code at Tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag_name }}
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build Core Staticlib & C-Dylib
+        run: cargo build --release --target ${{ matrix.target }} -p seatling
+
+      - name: Build Node N-API Addon
+        run: cargo build --release --target ${{ matrix.target }} -p seatling-node
+
+      - name: Prepare Artifact Package
+        shell: bash
+        run: |
+          mkdir -p dist-pkg/include/seatling
+          cp crates/seatling/include/seatling/* dist-pkg/include/seatling/
+          cp LICENSE dist-pkg/LICENSE
+          mkdir -p dist-pkg/lib
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp target/${{ matrix.target }}/release/seatling.lib dist-pkg/lib/
+            cp target/${{ matrix.target }}/release/seatling.dll dist-pkg/lib/
+            cp target/${{ matrix.target }}/release/seatling_node.dll dist-pkg/${{ matrix.node_name }}
+          elif [ "${{ runner.os }}" = "macOS" ]; then
+            cp target/${{ matrix.target }}/release/libseatling.a dist-pkg/lib/
+            cp target/${{ matrix.target }}/release/libseatling.dylib dist-pkg/lib/
+            cp target/${{ matrix.target }}/release/libseatling_node.dylib dist-pkg/${{ matrix.node_name }}
+          else
+            cp target/${{ matrix.target }}/release/libseatling.a dist-pkg/lib/
+            cp target/${{ matrix.target }}/release/libseatling.so dist-pkg/lib/
+            cp target/${{ matrix.target }}/release/libseatling_node.so dist-pkg/${{ matrix.node_name }}
+          fi
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist-pkg/*
+
+  attach-to-release:
+    name: Attach Precompiled Binaries to Release
+    needs: [build-release-assets]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout Code at Tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag_name }}
+
+      - name: Download Artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+
+      - name: Package Release Archives
+        run: |
+          mkdir -p release-archives
+          for dir in artifacts/*; do
+            platform=$(basename "$dir")
+            tar -czvf "release-archives/${platform}.tar.gz" -C "$dir" .
+          done
+
+      - name: Attach Archives to GitHub Release
+        run: |
+          gh release upload "${{ inputs.tag_name }}" release-archives/* --clobber
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-npm:
+    name: Publish to NPM Registry
+    needs: [attach-to-release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout Code at Tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag_name }}
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Native Addon
+        run: cargo build --release -p seatling-node
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install Dependencies & Build TypeScript
+        working-directory: crates/seatling-node
+        run: |
+          node ../../scripts/stamp-license-date.js
+          npm install
+          npm run build
+
+      - name: Publish to NPM
+        working-directory: crates/seatling-node
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

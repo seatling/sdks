@@ -102,7 +102,8 @@ seatling-sdks/
 ├── .github/
 │   └── workflows/
 │       ├── ci.yml                 # Multi-platform CI (OpenAPI, Rust core, Node SDK, C++ SDK)
-│       └── release-please.yml     # Release Please automated versioning & binary release
+│       ├── publish-release.yml    # Multi-platform binary compilation, release assets, & NPM publishing
+│       └── release-please.yml     # Release Please automated versioning & release orchestration
 ├── crates/
 │   ├── seatling/                  # Rust Core Engine & C-ABI (rlib, staticlib, cdylib)
 │   │   ├── include/seatling/      # C & C++17 RAII headers (seatling.h, seatling.hpp)
