@@ -3,12 +3,12 @@
   "version": "1.1.0",
   "private": true,
   "license": "BUSL-1.1",
-  "description": "Seatling Multi-Language Client SDKs Monorepo (Rust, C++, Node.js/Electron)",
+  "description": "Seatling Multi-Language Client SDKs Monorepo (Rust, C++, Node.js/Electron, Go)",
   "workspaces": [
     "crates/seatling-node"
   ],
   "scripts": {
-    "test": "npm run test:rust && npm run test:node && npm run test:cpp",
+    "test": "npm run test:rust && npm run test:node && npm run test:cpp && npm run test:go",
     "test:rust": "cargo test --workspace",
     "test:node": "npm test --prefix crates/seatling-node",
     "test:node:unit": "npm run test:unit --prefix crates/seatling-node",
@@ -16,20 +16,23 @@
     "test:node:edge": "npm run test:edge --prefix crates/seatling-node",
     "test:node:e2e": "npm run test:e2e --prefix crates/seatling-node",
     "test:cpp": "ctest --test-dir crates/seatling/build -C Release --output-on-failure",
-    "lint": "npm run lint:rust && npm run lint:node && npm run lint:openapi && npm run license:check",
+    "test:go": "node scripts/run-go.js test -v ./...",
+    "lint": "npm run lint:rust && npm run lint:node && npm run lint:go && npm run lint:openapi && npm run license:check",
     "lint:rust": "cargo clippy --workspace --all-targets -- -D warnings",
     "lint:node": "npm run lint --prefix crates/seatling-node",
-    "lint:openapi": "npx --yes @redocly/cli lint openapi.yaml",
+    "lint:go": "node scripts/run-go.js vet ./...",
+    "lint:openapi": "npx --yes @redocly/cli@1.25.1 lint openapi.yaml",
     "license:check": "node scripts/stamp-license-date.js --check",
     "license:stamp": "node scripts/stamp-license-date.js",
     "format": "npm run format:rust",
     "format:check": "npm run format:rust:check",
     "format:rust": "cargo fmt --all",
     "format:rust:check": "cargo fmt --all -- --check",
-    "build": "npm run build:rust && npm run build:node && npm run build:cpp",
+    "build": "npm run build:rust && npm run build:node && npm run build:cpp && npm run build:go",
     "build:rust": "cargo build --release -p seatling",
     "build:node": "npm run build:native --prefix crates/seatling-node",
-    "build:cpp": "cmake --build crates/seatling/build --config Release"
+    "build:cpp": "cmake -B crates/seatling/build -S crates/seatling && cmake --build crates/seatling/build --config Release",
+    "build:go": "node scripts/run-go.js build ./..."
   },
   "engines": {
     "node": ">=20.0.0",

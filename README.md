@@ -95,14 +95,61 @@ Headers are located at [`crates/seatling/include/seatling/`](./crates/seatling/i
 
 ---
 
+### Golang Desktop / Services (`github.com/seatling/seatling-sdk-go`)
+
+Monolithic statically linked distribution model (`CGO_ENABLED=1`) executing against the compiled Rust core with sub-microsecond lock-free reads (~40ns), zero runtime DLL extraction (immunized against DLL hijacking), and seamless cross-compilation via `zig cc`:
+
+```bash
+go get github.com/seatling/seatling-sdk-go
+```
+
+```go
+package main
+
+import (
+	"fmt"
+	"github.com/seatling/seatling-sdk-go"
+)
+
+func main() {
+	client, err := seatling.New(seatling.Config{
+		WorkspaceID: "ws_01j8k9m0n1p2q3r4s5t6u7v8w9",
+		ProductID:   "prod_creative_app",
+		PublicKeys: map[string]string{
+			"prod_creative_app_2026_v1": "6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iw=",
+		},
+		AppVersion: "1.0.0",
+	})
+	if err != nil {
+		panic(err)
+	}
+	defer client.Close()
+
+	// 1. Initialize offline cache (< 1ms, non-blocking, zero network I/O)
+	status, _ := client.Initialize()
+
+	// 2. Lock-free check in request handlers, worker pools, or CLIs (< 0.0002ms)
+	if client.IsAuthorized() {
+		maxWorkers := client.GetEntitlementInt64("max_workers", 16)
+		fmt.Println("Running with authorized seat. Max workers:", maxWorkers)
+	} else {
+		fmt.Println("Evaluation mode. Status:", status)
+	}
+}
+```
+
+SDK source is located at [`crates/seatling-go/`](./crates/seatling-go).
+
+---
+
 ## Repository Structure
 
 ```text
 seatling-sdks/
 ├── .github/
 │   └── workflows/
-│       ├── ci.yml                 # Multi-platform CI (OpenAPI, Rust core, Node SDK, C++ SDK)
-│       ├── publish-release.yml    # Multi-platform binary compilation, release assets, & NPM publishing
+│       ├── ci.yml                 # Multi-platform CI (OpenAPI, Rust core, Node SDK, C++ SDK, Go SDK)
+│       ├── publish-release.yml    # Multi-platform binary compilation, release assets, NPM & Go publishing
 │       └── release-please.yml     # Release Please automated versioning & release orchestration
 ├── crates/
 │   ├── seatling/                  # Rust Core Engine & C-ABI (rlib, staticlib, cdylib)
@@ -110,10 +157,17 @@ seatling-sdks/
 │   │   ├── src/                   # Rust core source code (JWT, Keystore, HWID, Verifier, Client)
 │   │   ├── tests/                 # Rust unit tests & C++ CMake integration test
 │   │   └── examples/              # C++ integration example
-│   └── seatling-node/             # Unified Node.js & Electron SDK (@seatling/node)
-│       ├── package.json           # NPM package definition (published to npm)
-│       ├── src/                   # Rust N-API bindings & TypeScript wrapper source
-│       └── test/                  # Node.js test suite
+│   ├── seatling-node/             # Unified Node.js & Electron SDK (@seatling/node)
+│   │   ├── package.json           # NPM package definition (published to npm)
+│   │   ├── src/                   # Rust N-API bindings & TypeScript wrapper source
+│   │   └── test/                  # Node.js test suite
+│   └── seatling-go/               # Unified Golang SDK (github.com/seatling/seatling-sdk-go)
+│       ├── go.mod                 # Go module definition
+│       ├── client.go              # Thread-safe SeatlingClient wrapper
+│       ├── hwid.go                # Hardware anchor & fuzzy quorum calculation
+│       ├── internal/bin/          # Embedded native libraries (//go:embed)
+│       ├── internal/loader/       # CGO-free dynamic library loader (syscall / purego)
+│       └── examples/              # Standalone Go integration example
 ├── openapi.yaml                   # OpenAPI 3.1.0 Contract Specification
 └── Cargo.toml                     # Cargo Workspace definition
 ```

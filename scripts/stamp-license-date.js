@@ -19,6 +19,7 @@ const rootDir = path.resolve(__dirname, '..');
 const licenseFiles = [
   path.join(rootDir, 'LICENSE'),
   path.join(rootDir, 'crates', 'seatling-node', 'LICENSE'),
+  path.join(rootDir, 'crates', 'seatling-go', 'LICENSE'),
 ];
 
 function calculateDefaultChangeDate() {

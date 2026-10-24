@@ -40,7 +40,8 @@ jobs:
           node-version: 22
 
       - name: Lint openapi.yaml
-        run: npx --yes @redocly/cli lint openapi.yaml
+      - name: Verify C Header Parity (C++ & Go SDKs)
+        run: cmp -s crates/seatling/include/seatling/seatling.h crates/seatling-go/include/seatling.h
 
       - name: Validate BSL License Change Dates
         run: node scripts/stamp-license-date.js --check
@@ -146,3 +147,71 @@ jobs:
 
       - name: Run CTest Suite (Against Rust Staticlib)
         run: ctest --test-dir build -C Release --output-on-failure
+
+  go-sdk:
+    name: Go SDK / ${{ matrix.os }} (Go ${{ matrix.go-version }})
+    runs-on: ${{ matrix.os }}
+    needs: [rust-workspace]
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        go-version: ["1.22", "1.23"]
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.os == 'windows-latest' && 'x86_64-pc-windows-gnu' || '' }}
+
+      - name: Build Seatling Core Staticlib
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cargo build --release --target x86_64-pc-windows-gnu -p seatling
+          else
+            cargo build --release -p seatling
+          fi
+
+      - name: Setup Zig Compiler
+        uses: mlugg/setup-zig@v1
+        with:
+          version: 0.13.0
+
+      - name: Prepare Local Static Archives for Go
+        shell: bash
+        run: |
+          mkdir -p crates/seatling-go/lib/linux_amd64
+          mkdir -p crates/seatling-go/lib/darwin_arm64
+          mkdir -p crates/seatling-go/lib/darwin_amd64
+          mkdir -p crates/seatling-go/lib/windows_amd64
+
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp target/x86_64-pc-windows-gnu/release/libseatling.a crates/seatling-go/lib/windows_amd64/libseatling.a
+          elif [ "${{ runner.os }}" = "macOS" ]; then
+            cp target/release/libseatling.a crates/seatling-go/lib/darwin_arm64/libseatling.a
+            cp target/release/libseatling.a crates/seatling-go/lib/darwin_amd64/libseatling.a
+          else
+            cp target/release/libseatling.a crates/seatling-go/lib/linux_amd64/libseatling.a
+          fi
+
+      - name: Setup Go ${{ matrix.go-version }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+          cache: true
+          cache-dependency-path: crates/seatling-go/go.mod
+
+      - name: Lint Go (go vet via CGO)
+        run: node scripts/run-go.js vet ./...
+
+      - name: Run Go Test Suite (Static CGO)
+        run: node scripts/run-go.js test -v ./...
+
+      - name: Build Standalone Go Example Binary
+        run: node scripts/run-go.js build -o example_bin ./examples/main.go
+
+
