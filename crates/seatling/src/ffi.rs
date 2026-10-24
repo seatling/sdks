@@ -54,13 +54,16 @@ pub unsafe extern "C" fn seatling_client_new(
             let entries =
                 unsafe { std::slice::from_raw_parts(cfg.public_keys, cfg.public_keys_count) };
             for entry in entries {
-                if let (Some(kid), Some(key)) = unsafe {
+                let (Some(kid), Some(key)) = (unsafe {
                     (
                         c_str_to_string(entry.kid),
                         c_str_to_string(entry.public_key_b64),
                     )
-                } {
-                    map.insert(kid, key);
+                }) else {
+                    return std::ptr::null_mut();
+                };
+                if kid.is_empty() || key.is_empty() || map.insert(kid, key).is_some() {
+                    return std::ptr::null_mut();
                 }
             }
             map
@@ -111,32 +114,41 @@ pub unsafe extern "C" fn seatling_client_initialize(client: *mut SeatlingClient)
 
 #[no_mangle]
 pub unsafe extern "C" fn seatling_client_is_authorized(client: *const SeatlingClient) -> bool {
-    if client.is_null() {
-        return false;
-    }
-    // SAFETY: Caller guarantees `client` is a valid pointer returned by `seatling_client_new`.
-    let c = unsafe { &*client };
-    c.is_authorized()
+    catch_unwind(AssertUnwindSafe(|| {
+        if client.is_null() {
+            return false;
+        }
+        // SAFETY: Caller guarantees `client` is a valid pointer returned by `seatling_client_new`.
+        let c = unsafe { &*client };
+        c.is_authorized()
+    }))
+    .unwrap_or(false)
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn seatling_client_is_valid(client: *const SeatlingClient) -> bool {
-    if client.is_null() {
-        return false;
-    }
-    // SAFETY: Caller guarantees `client` is a valid pointer returned by `seatling_client_new`.
-    let c = unsafe { &*client };
-    c.is_valid()
+    catch_unwind(AssertUnwindSafe(|| {
+        if client.is_null() {
+            return false;
+        }
+        // SAFETY: Caller guarantees `client` is a valid pointer returned by `seatling_client_new`.
+        let c = unsafe { &*client };
+        c.is_valid()
+    }))
+    .unwrap_or(false)
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn seatling_client_status(client: *const SeatlingClient) -> StatusCode {
-    if client.is_null() {
-        return StatusCode::NotActivated;
-    }
-    // SAFETY: Caller guarantees `client` is a valid pointer returned by `seatling_client_new`.
-    let c = unsafe { &*client };
-    c.status()
+    catch_unwind(AssertUnwindSafe(|| {
+        if client.is_null() {
+            return StatusCode::NotActivated;
+        }
+        // SAFETY: Caller guarantees `client` is a valid pointer returned by `seatling_client_new`.
+        let c = unsafe { &*client };
+        c.status()
+    }))
+    .unwrap_or(StatusCode::TamperOrSignatureInvalid)
 }
 
 #[no_mangle]

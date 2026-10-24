@@ -11,7 +11,7 @@
 
 namespace seatling {
 
-enum class StatusCode {
+enum class StatusCode : int32_t {
     Ok = SEATLING_STATUS_OK,
     Valid = SEATLING_STATUS_OK, // V5 alias
     OfflineGraceValid = SEATLING_STATUS_OFFLINE_GRACE_VALID,
@@ -68,6 +68,12 @@ public:
     using Status = StatusCode;
 
     explicit SeatlingClient(const SeatlingConfig& config) {
+        if (has_nul(config.workspace_id) || has_nul(config.product_id) ||
+            has_nul(config.app_version) || has_nul(config.api_base_url) ||
+            (config.storage_dir.has_value() && has_nul(*config.storage_dir))) {
+            throw std::runtime_error("Configuration strings must not contain embedded NUL bytes");
+        }
+
         seatling_config_t c_cfg{};
         c_cfg.workspace_id = config.workspace_id.c_str();
         c_cfg.product_id = config.product_id.c_str();
@@ -75,6 +81,9 @@ public:
         std::vector<seatling_key_entry_t> key_entries;
         key_entries.reserve(config.public_keys.size());
         for (const auto& [kid, key_b64] : config.public_keys) {
+            if (has_nul(kid) || has_nul(key_b64)) {
+                throw std::runtime_error("Public key entries must not contain embedded NUL bytes");
+            }
             seatling_key_entry_t entry;
             entry.kid = kid.c_str();
             entry.public_key_b64 = key_b64.c_str();
@@ -159,28 +168,28 @@ public:
 
     std::string get_session_id() const {
         if (!m_handle) return "";
-        char buffer[64] = {0};
+        char buffer[128] = {0};
         size_t len = ::seatling_client_get_session_id(m_handle, buffer, sizeof(buffer));
         return std::string(buffer, len);
     }
 
     bool get_entitlement_bool(const std::string& key, bool default_val = false) const noexcept {
-        if (!m_handle) return default_val;
+        if (!m_handle || has_nul(key)) return default_val;
         return ::seatling_client_get_entitlement_bool(m_handle, key.c_str(), default_val);
     }
 
     int64_t get_entitlement_i64(const std::string& key, int64_t default_val = 0) const noexcept {
-        if (!m_handle) return default_val;
+        if (!m_handle || has_nul(key)) return default_val;
         return ::seatling_client_get_entitlement_i64(m_handle, key.c_str(), default_val);
     }
 
     double get_entitlement_f64(const std::string& key, double default_val = 0.0) const noexcept {
-        if (!m_handle) return default_val;
+        if (!m_handle || has_nul(key)) return default_val;
         return ::seatling_client_get_entitlement_f64(m_handle, key.c_str(), default_val);
     }
 
     bool activate(const std::string& license_key) {
-        if (!m_handle) return false;
+        if (!m_handle || has_nul(license_key)) return false;
         return ::seatling_client_activate(m_handle, license_key.c_str());
     }
 
@@ -201,6 +210,10 @@ public:
     }
 
 private:
+    static bool has_nul(const std::string& s) noexcept {
+        return s.find('\0') != std::string::npos;
+    }
+
     ::SeatlingClient* m_handle{nullptr};
 };
 

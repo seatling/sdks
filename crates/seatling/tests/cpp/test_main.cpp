@@ -166,7 +166,7 @@ void test_v3_dual_query() {
     }
 }
 
-// 6. V6 Public Key Validation (rejection on empty keys)
+// 6. V6 Public Key Validation (rejection on empty keys, embedded NUL, or duplicate FFI keys)
 void test_v6_rejection_on_empty_keys() {
     seatling::SeatlingConfig cfg;
     cfg.workspace_id = "ws_empty";
@@ -182,6 +182,36 @@ void test_v6_rejection_on_empty_keys() {
 
     if (!threw) {
         throw std::runtime_error("Expected SeatlingClient to throw on empty public_keys");
+    }
+
+    // Embedded NUL byte in workspace_id must throw
+    seatling::SeatlingConfig nul_cfg;
+    nul_cfg.workspace_id = std::string("ws_bad\0injected", 15);
+    nul_cfg.product_id = "prod_empty";
+    nul_cfg.public_keys["kid_1"] = TEST_PUB_KEY;
+    bool nul_threw = false;
+    try {
+        seatling::SeatlingClient client(nul_cfg);
+    } catch (const std::runtime_error&) {
+        nul_threw = true;
+    }
+    if (!nul_threw) {
+        throw std::runtime_error("Expected SeatlingClient to throw on embedded NUL byte");
+    }
+
+    // Duplicate kid entries at raw C-ABI level must fail closed (return nullptr)
+    seatling_key_entry_t dup_entries[2] = {
+        { "dup_kid", TEST_PUB_KEY },
+        { "dup_kid", TEST_PUB_KEY }
+    };
+    seatling_config_t raw_cfg{};
+    raw_cfg.workspace_id = "ws_dup";
+    raw_cfg.product_id = "prod_dup";
+    raw_cfg.public_keys = dup_entries;
+    raw_cfg.public_keys_count = 2;
+    raw_cfg.app_version = "1.0.0";
+    if (::seatling_client_new(&raw_cfg) != nullptr) {
+        throw std::runtime_error("Expected seatling_client_new to reject duplicate kid entries");
     }
 }
 

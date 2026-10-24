@@ -38,7 +38,7 @@ pub fn zeroize_slice(buf: &mut [u8]) {
 /// ├── grace_duration_seconds   (int64, from server-signed token)
 /// ├── high_water_mark_utc      (int64 Unix epoch seconds, monotonic local clock)
 /// ├── revocation_status        (uint32, 0 if clean, or persisted StatusCode)
-/// ├── reserved                 (uint32, 0)
+/// ├── ack_state_tag            (uint32, 0 if no ack, or truncated SHA-256 of active ack)
 /// └── revocation_context       (8 bytes, context hash for scoped revocations)
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KeystoreRecord {
@@ -48,6 +48,7 @@ pub struct KeystoreRecord {
     pub grace_duration_seconds: i64,
     pub high_water_mark_utc: i64,
     pub revocation_status: u32,
+    pub ack_state_tag: u32,
     pub revocation_context: [u8; 8],
 }
 
@@ -66,7 +67,7 @@ impl KeystoreRecord {
         buf[72..80].copy_from_slice(&self.grace_duration_seconds.to_be_bytes());
         buf[80..88].copy_from_slice(&self.high_water_mark_utc.to_be_bytes());
         buf[88..92].copy_from_slice(&self.revocation_status.to_be_bytes());
-        buf[92..96].copy_from_slice(&0u32.to_be_bytes());
+        buf[92..96].copy_from_slice(&self.ack_state_tag.to_be_bytes());
         buf[96..104].copy_from_slice(&self.revocation_context);
         buf
     }
@@ -90,16 +91,19 @@ impl KeystoreRecord {
         b8.copy_from_slice(&bytes[80..88]);
         let high_water_mark_utc = i64::from_be_bytes(b8);
 
-        let (revocation_status, revocation_context) = if bytes.len() == KEYSTORE_RECORD_V4_LEN {
-            let mut b4 = [0u8; 4];
-            b4.copy_from_slice(&bytes[88..92]);
-            let status = u32::from_be_bytes(b4);
-            let mut ctx = [0u8; 8];
-            ctx.copy_from_slice(&bytes[96..104]);
-            (status, ctx)
-        } else {
-            (0, [0u8; 8])
-        };
+        let (revocation_status, ack_state_tag, revocation_context) =
+            if bytes.len() == KEYSTORE_RECORD_V4_LEN {
+                let mut b4 = [0u8; 4];
+                b4.copy_from_slice(&bytes[88..92]);
+                let status = u32::from_be_bytes(b4);
+                b4.copy_from_slice(&bytes[92..96]);
+                let ack_tag = u32::from_be_bytes(b4);
+                let mut ctx = [0u8; 8];
+                ctx.copy_from_slice(&bytes[96..104]);
+                (status, ack_tag, ctx)
+            } else {
+                (0, 0, [0u8; 8])
+            };
 
         Ok(Self {
             private_key,
@@ -108,6 +112,7 @@ impl KeystoreRecord {
             grace_duration_seconds,
             high_water_mark_utc,
             revocation_status,
+            ack_state_tag,
             revocation_context,
         })
     }
@@ -132,7 +137,7 @@ impl HardwareSealedKeystore {
         if let Some(content) = storage.read_keystore() {
             if let Ok(stored) = serde_json::from_str::<StoredKeystoreFile>(&content) {
                 if stored.version == 2 {
-                    if let Ok(keystore) = Self::try_unseal_v2(&stored, anchors) {
+                    if let Ok(keystore) = Self::try_unseal_v2(&stored, anchors, storage) {
                         return keystore;
                     }
                     // Failed to unseal v2 keystore
@@ -160,6 +165,7 @@ impl HardwareSealedKeystore {
             grace_duration_seconds: 0, // Clean keystore grants 0 offline grace until first activation
             high_water_mark_utc: now_utc,
             revocation_status: 0,
+            ack_state_tag: 0,
             revocation_context: [0u8; 8],
         };
         zeroize_slice(&mut seed);
@@ -184,6 +190,7 @@ impl HardwareSealedKeystore {
     fn try_unseal_v2(
         stored: &StoredKeystoreFile,
         anchors: &SealingAnchors,
+        storage: &StorageManager,
     ) -> Result<Self, &'static str> {
         let iv = BASE64.decode(&stored.iv).map_err(|_| "invalid iv")?;
         let ct = BASE64
@@ -201,12 +208,20 @@ impl HardwareSealedKeystore {
             if stored.tier == AttestationTier::HardwareSealed {
                 if let Some(ref dpapi_b64) = stored.dpapi_blob {
                     let dpapi_bytes = BASE64.decode(dpapi_b64).map_err(|_| "invalid dpapi")?;
-                    let unprotected = dpapi_unprotect(&dpapi_bytes, b"seatling:dpapi:v2")
+                    let mut unprotected = dpapi_unprotect(&dpapi_bytes, b"seatling:dpapi:v2")
                         .map_err(|_| "dpapi unprotect failed")?;
                     if unprotected.len() != 32 {
+                        zeroize_slice(&mut unprotected);
                         return Err("invalid secret len");
                     }
                     secret32.copy_from_slice(&unprotected);
+                    zeroize_slice(&mut unprotected);
+                    if let Some(mut anchor) = storage.read_secret_anchor() {
+                        for (s, a) in secret32.iter_mut().zip(anchor.iter()) {
+                            *s ^= *a;
+                        }
+                        zeroize_slice(&mut anchor);
+                    }
                 } else {
                     return Err("missing dpapi blob");
                 }
@@ -216,19 +231,27 @@ impl HardwareSealedKeystore {
                     return Err("invalid sw len");
                 }
                 secret32.copy_from_slice(&sw_bytes);
+            } else {
+                return Err("missing sw_secret");
             }
         }
 
         #[cfg(not(target_os = "windows"))]
         {
-            if stored.tier == AttestationTier::Software {
-                if let Some(ref sw_b64) = stored.sw_secret {
-                    let sw_bytes = BASE64.decode(sw_b64).map_err(|_| "invalid sw_secret")?;
-                    if sw_bytes.len() != 32 {
-                        return Err("invalid sw len");
-                    }
-                    secret32.copy_from_slice(&sw_bytes);
+            if stored.tier == AttestationTier::HardwareSealed {
+                let mut anchor = storage
+                    .read_secret_anchor()
+                    .ok_or("missing keystore secret anchor")?;
+                secret32.copy_from_slice(&anchor);
+                zeroize_slice(&mut anchor);
+            } else if let Some(ref sw_b64) = stored.sw_secret {
+                let sw_bytes = BASE64.decode(sw_b64).map_err(|_| "invalid sw_secret")?;
+                if sw_bytes.len() != 32 {
+                    return Err("invalid sw len");
                 }
+                secret32.copy_from_slice(&sw_bytes);
+            } else {
+                return Err("missing sw_secret");
             }
         }
 
@@ -316,6 +339,29 @@ impl HardwareSealedKeystore {
         });
     }
 
+    pub fn rotate_keypair(&mut self, storage: &StorageManager) {
+        let _lock = storage.acquire_lock(Duration::from_secs(3)).ok();
+        let mut seed = [0u8; 32];
+        rand::fill(&mut seed);
+        let signing_key = SigningKey::from_bytes(&seed);
+        let verifying_key = signing_key.verifying_key();
+        let now_utc = Self::current_unix_time();
+
+        self.signing_key = signing_key;
+        self.verifying_key = verifying_key;
+        self.record.private_key = seed;
+        self.record.public_key = *verifying_key.as_bytes();
+        self.record.last_validated_at_utc = now_utc;
+        self.record.grace_duration_seconds = 0;
+        self.record.high_water_mark_utc = self.record.high_water_mark_utc.max(now_utc);
+        self.record.revocation_status = 0;
+        self.record.ack_state_tag = 0;
+        self.record.revocation_context = [0u8; 8];
+        zeroize_slice(&mut seed);
+
+        self.persist(storage);
+    }
+
     pub fn mutate<F>(&mut self, storage: &StorageManager, f: F)
     where
         F: FnOnce(&mut KeystoreRecord),
@@ -325,7 +371,7 @@ impl HardwareSealedKeystore {
         let anchors = HWIDCollector::sealing_anchors();
         if let Some(content) = storage.read_keystore() {
             if let Ok(stored) = serde_json::from_str::<StoredKeystoreFile>(&content) {
-                if let Ok(ks) = Self::try_unseal_v2(&stored, anchors) {
+                if let Ok(ks) = Self::try_unseal_v2(&stored, anchors, storage) {
                     if ks.verifying_key == self.verifying_key {
                         self.record = ks.record;
                     }
@@ -341,13 +387,7 @@ impl HardwareSealedKeystore {
         let anchors = HWIDCollector::sealing_anchors();
 
         let mut secret32 = [0u8; 32];
-        #[cfg(target_os = "windows")]
         rand::fill(&mut secret32);
-
-        #[cfg(not(target_os = "windows"))]
-        if self.tier == AttestationTier::Software {
-            rand::fill(&mut secret32);
-        }
 
         #[allow(unused_mut)]
         let mut dpapi_blob = None;
@@ -359,6 +399,14 @@ impl HardwareSealedKeystore {
                 if let Ok(protected) = dpapi_protect(&secret32, b"seatling:dpapi:v2") {
                     dpapi_blob = Some(BASE64.encode(protected));
                 }
+                let mut anchor = [0u8; 32];
+                rand::fill(&mut anchor);
+                if storage.write_secret_anchor(&anchor).is_ok() {
+                    for (s, a) in secret32.iter_mut().zip(anchor.iter()) {
+                        *s ^= *a;
+                    }
+                }
+                zeroize_slice(&mut anchor);
             } else {
                 sw_secret = Some(BASE64.encode(secret32));
             }
@@ -366,7 +414,9 @@ impl HardwareSealedKeystore {
 
         #[cfg(not(target_os = "windows"))]
         {
-            if self.tier == AttestationTier::Software {
+            if self.tier == AttestationTier::HardwareSealed {
+                let _ = storage.write_secret_anchor(&secret32);
+            } else {
                 sw_secret = Some(BASE64.encode(secret32));
             }
         }

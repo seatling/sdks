@@ -287,3 +287,109 @@ fn test_file_lock_timeout_and_release() {
 
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
+
+#[test]
+fn test_security_hardening_regressions() {
+    let tmp_dir = format!(
+        "{}/seatling_sec_reg_test_{}",
+        std::env::temp_dir().display(),
+        std::process::id()
+    );
+    let storage = seatling::StorageManager::new("ws_sec", "prod_sec", Some(&tmp_dir));
+    let mut keystore = seatling::HardwareSealedKeystore::load_or_generate(&storage);
+    let initial_vk_b64 = keystore.public_key_base64();
+
+    // 1. Snapshot rollback of keystore.bin after state mutation must fail unsealing
+    let snapshot_keystore_json = storage.read_keystore().expect("read initial keystore");
+    keystore.mutate(&storage, |rec| {
+        rec.revocation_status = StatusCode::LicenseSuspendedOrRevoked as u32;
+    });
+    // Attacker restores old keystore.bin without matching rotated .keystore.secret
+    storage.write_keystore(&snapshot_keystore_json).unwrap();
+    let after_rollback = seatling::HardwareSealedKeystore::load_or_generate(&storage);
+    assert_ne!(
+        after_rollback.public_key_base64(),
+        initial_vk_b64,
+        "Rolled-back keystore.bin must not unseal original keypair"
+    );
+
+    // 2. Post-deactivate lease replay must be rejected due to device key rotation
+    let dummy_sk = ed25519_dalek::SigningKey::from_bytes(&[91u8; 32]);
+    let dummy_vk = dummy_sk.verifying_key();
+    let dummy_vk_b64 = base64::engine::general_purpose::STANDARD.encode(dummy_vk.as_bytes());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+
+    let current_dev_vk = after_rollback.public_key_base64();
+    let claims = LicenseJwtClaims {
+        iss: "seatling".to_string(),
+        sub: "SEAT-REPLAY-01".to_string(),
+        aud: "ws_sec".to_string(),
+        product_id: "prod_sec".to_string(),
+        seat_id: "seat_01".to_string(),
+        masked_key: None,
+        buyer_email: None,
+        hwid: seatling::HWIDCollector::get_hwid(),
+        device_key: Some(current_dev_vk),
+        app_version: "1.0.0".to_string(),
+        iat: now,
+        nbf: Some(now),
+        exp: now + 86400,
+        offline_grace_days: Some(1),
+        status: "active".to_string(),
+        entitlements: std::collections::HashMap::new(),
+    };
+    let lease_jwt = encode_eddsa_jwt(
+        &JwtHeader::new("seatling-license+jwt", Some("kid_sec")),
+        &claims,
+        &dummy_sk,
+    )
+    .unwrap();
+    storage.write_lease(&lease_jwt).unwrap();
+
+    let mut public_keys = std::collections::HashMap::new();
+    public_keys.insert("kid_sec".to_string(), dummy_vk_b64);
+
+    let cfg = SeatlingConfig {
+        workspace_id: "ws_sec".to_string(),
+        product_id: "prod_sec".to_string(),
+        public_keys: public_keys.clone(),
+        app_version: "1.0.0".to_string(),
+        api_base_url: "https://api.seatling.com".to_string(),
+        heartbeat_interval_seconds: 14400,
+        storage_dir: Some(tmp_dir.clone()),
+    };
+
+    let client = SeatlingClient::new(cfg.clone()).unwrap();
+    assert_eq!(client.initialize().status, StatusCode::Ok);
+    assert!(client.is_authorized());
+
+    // Deactivate rotates device keypair; restoring backed-up lease_jwt must fail
+    client.deactivate().unwrap();
+    storage.write_lease(&lease_jwt).unwrap();
+    assert_eq!(
+        client.initialize().status,
+        StatusCode::TamperOrSignatureInvalid
+    );
+    assert!(!client.is_authorized());
+
+    // 3. Insecure or malformed api_base_url must be rejected
+    for bad_url in [
+        "http://api.seatling.com",
+        "https://api.seatling.com?x=1",
+        "https://api.seatling.com#frag",
+        "https://user@api.seatling.com",
+    ] {
+        let mut bad_cfg = cfg.clone();
+        bad_cfg.api_base_url = bad_url.to_string();
+        assert!(
+            SeatlingClient::new(bad_cfg).is_err(),
+            "Expected error for bad api_base_url: {}",
+            bad_url
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+}

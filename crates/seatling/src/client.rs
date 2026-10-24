@@ -51,8 +51,60 @@ fn validate_semver(v: &str) -> bool {
     true
 }
 
+fn validate_api_base_url(raw: &str) -> Result<String, SeatlingError> {
+    let trimmed = raw.trim().trim_end_matches('/');
+    if trimmed.is_empty()
+        || trimmed.contains('?')
+        || trimmed.contains('#')
+        || trimmed.contains('@')
+        || trimmed.contains('\\')
+        || trimmed.contains("..")
+        || trimmed.chars().any(|c| c.is_control() || c.is_whitespace())
+    {
+        return Err(SeatlingError::new(
+            StatusCode::InvalidConfiguration,
+            "Invalid api_base_url: contains forbidden characters or empty host".to_string(),
+        ));
+    }
+
+    let rest = if let Some(r) = trimmed.strip_prefix("https://") {
+        r
+    } else if let Some(r) = trimmed.strip_prefix("http://") {
+        let host = r.split('/').next().unwrap_or("");
+        let is_loopback = host == "127.0.0.1"
+            || host.starts_with("127.0.0.1:")
+            || host == "localhost"
+            || host.starts_with("localhost:")
+            || host == "[::1]"
+            || host.starts_with("[::1]:");
+        if !is_loopback {
+            return Err(SeatlingError::new(
+                StatusCode::InvalidConfiguration,
+                "Invalid api_base_url: cleartext http:// is only permitted for loopback addresses"
+                    .to_string(),
+            ));
+        }
+        r
+    } else {
+        return Err(SeatlingError::new(
+            StatusCode::InvalidConfiguration,
+            "Invalid api_base_url: scheme must be https://".to_string(),
+        ));
+    };
+
+    let host = rest.split('/').next().unwrap_or("");
+    if host.is_empty() || host.starts_with(':') {
+        return Err(SeatlingError::new(
+            StatusCode::InvalidConfiguration,
+            "Invalid api_base_url: missing host".to_string(),
+        ));
+    }
+
+    Ok(trimmed.to_string())
+}
+
 impl SeatlingClient {
-    pub fn new(config: SeatlingConfig) -> Result<Self, SeatlingError> {
+    pub fn new(mut config: SeatlingConfig) -> Result<Self, SeatlingError> {
         if !validate_semver(&config.app_version) {
             return Err(SeatlingError::new(
                 StatusCode::InvalidConfiguration,
@@ -62,6 +114,8 @@ impl SeatlingClient {
                 ),
             ));
         }
+
+        config.api_base_url = validate_api_base_url(&config.api_base_url)?;
 
         let storage = StorageManager::new(
             &config.workspace_id,
@@ -128,6 +182,15 @@ impl SeatlingClient {
         let mut res = [0u8; 8];
         res.copy_from_slice(&out[..8]);
         res
+    }
+
+    fn compute_ack_tag(raw_ack: &str) -> u32 {
+        let mut hasher = Sha256::new();
+        hasher.update(raw_ack.as_bytes());
+        let out = hasher.finalize();
+        let mut b4 = [0u8; 4];
+        b4.copy_from_slice(&out[..4]);
+        u32::from_be_bytes(b4).max(1)
     }
 
     fn evaluate_local(&self, now_utc: i64) -> (LeaseSnapshot, LocalHint, Option<LicenseJwtClaims>) {
@@ -275,8 +338,8 @@ impl SeatlingClient {
         }
 
         // If keystore has not yet been initialized with offline grace (0 duration)
-        // and a valid, verified offline lease exists on disk, initialize the authoritative
-        // keystore timeline from the signed token's iat and offline_grace_days.
+        // and a valid, verified offline lease exists on disk without clock rollback,
+        // initialize the authoritative keystore timeline from the signed token's iat and offline_grace_days.
         let ks_grace = {
             self.keystore
                 .lock()
@@ -284,20 +347,135 @@ impl SeatlingClient {
                 .record()
                 .grace_duration_seconds
         };
-        if ks_grace == 0 {
+        if ks_grace == 0 && clock_status != StatusCode::TimeTamperDetected {
             let grace_days = claims.offline_grace_days.unwrap_or(0);
             if grace_days > 0 {
-                let grace_duration = grace_days.max(0) * 86400;
+                let grace_duration = grace_days.max(0).saturating_mul(86400);
                 let mut ks = self.keystore.lock().unwrap_or_else(|e| e.into_inner());
-                ks.update_timeline(&self.storage, claims.iat, grace_duration);
+                ks.mutate(&self.storage, |rec| {
+                    rec.last_validated_at_utc = claims.iat;
+                    rec.high_water_mark_utc = rec.high_water_mark_utc.max(claims.iat);
+                    rec.grace_duration_seconds = grace_duration;
+                });
                 clock_status = ks.evaluate_clock_and_grace(now_utc);
             }
+        }
+
+        let ks_ack_tag = {
+            self.keystore
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .record()
+                .ack_state_tag
+        };
+
+        // Read and strictly verify stored heartbeat ACK for updated entitlements and expiration
+        let mut entitlements = claims.entitlements.clone();
+        let mut effective_exp = claims.exp;
+        let mut effective_verified_at = claims.iat;
+        match (ks_ack_tag != 0, self.storage.read_ack()) {
+            (true, None) => {
+                return (
+                    LeaseSnapshot {
+                        status: StatusCode::TamperOrSignatureInvalid,
+                        is_authorized: false,
+                        message: Some(
+                            "Stored heartbeat acknowledgment missing or deleted".to_string(),
+                        ),
+                        ..Default::default()
+                    },
+                    LocalHint::Clean,
+                    None,
+                );
+            }
+            (_, Some(raw_ack)) => {
+                if ks_ack_tag != 0 && Self::compute_ack_tag(&raw_ack) != ks_ack_tag {
+                    return (
+                        LeaseSnapshot {
+                            status: StatusCode::TamperOrSignatureInvalid,
+                            is_authorized: false,
+                            message: Some(
+                                "Stored heartbeat acknowledgment does not match keystore state"
+                                    .to_string(),
+                            ),
+                            ..Default::default()
+                        },
+                        LocalHint::Clean,
+                        None,
+                    );
+                }
+
+                let Ok((ack_header, ack_claims)) =
+                    crate::jwt::decode_and_verify_jwt::<crate::types::HeartbeatAckClaims, _>(
+                        &raw_ack,
+                        |h| self.verifier.resolve_key(h),
+                    )
+                else {
+                    return (
+                        LeaseSnapshot {
+                            status: StatusCode::TamperOrSignatureInvalid,
+                            is_authorized: false,
+                            message: Some("Invalid stored heartbeat acknowledgment".to_string()),
+                            ..Default::default()
+                        },
+                        LocalHint::Clean,
+                        None,
+                    );
+                };
+
+                if ack_header.typ != "seatling-heartbeat-ack+jwt"
+                    || ack_claims.aud != self.config.workspace_id
+                    || ack_claims.product_id != self.config.product_id
+                    || ack_claims.sub != claims.sub
+                    || ack_claims.seat_id != claims.seat_id
+                    || ack_claims.exp < ack_claims.iat
+                {
+                    return (
+                        LeaseSnapshot {
+                            status: StatusCode::TamperOrSignatureInvalid,
+                            is_authorized: false,
+                            message: Some(
+                                "Stored heartbeat acknowledgment claim mismatch".to_string(),
+                            ),
+                            ..Default::default()
+                        },
+                        LocalHint::Clean,
+                        None,
+                    );
+                }
+
+                if ack_claims.status != "active" {
+                    let st = if ack_claims.status == "locked" {
+                        StatusCode::RequiresPortalDeactivation
+                    } else {
+                        StatusCode::LicenseSuspendedOrRevoked
+                    };
+                    return (
+                        LeaseSnapshot {
+                            status: st,
+                            is_authorized: false,
+                            message: Some(format!(
+                                "Stored heartbeat acknowledgment status is '{}'",
+                                ack_claims.status
+                            )),
+                            ..Default::default()
+                        },
+                        LocalHint::Clean,
+                        None,
+                    );
+                }
+
+                entitlements = ack_claims.entitlements;
+                effective_exp = ack_claims.exp;
+                effective_verified_at = ack_claims.iat;
+            }
+            (false, None) => {}
         }
 
         // Authoritative Keystore Timeline Check
         let (status, is_authorized) = if clock_status == StatusCode::TimeTamperDetected {
             (StatusCode::TimeTamperDetected, false)
-        } else if clock_status == StatusCode::OfflineGraceExpired || now_utc > claims.exp {
+        } else if clock_status == StatusCode::OfflineGraceExpired || now_utc > effective_exp {
             (StatusCode::OfflineGraceExpired, false)
         } else if rebind_needed {
             (StatusCode::TamperOrSignatureInvalid, false)
@@ -305,27 +483,11 @@ impl SeatlingClient {
             (StatusCode::Ok, true)
         };
 
-        // Read stored heartbeat ACK for updated entitlements if valid
-        let mut entitlements = claims.entitlements.clone();
-        if let Some(raw_ack) = self.storage.read_ack() {
-            if let Ok((_h, ack_claims)) = crate::jwt::decode_and_verify_jwt::<
-                crate::types::HeartbeatAckClaims,
-                _,
-            >(&raw_ack, |h| self.verifier.resolve_key(h))
-            {
-                if ack_claims.aud == self.config.workspace_id
-                    && ack_claims.product_id == self.config.product_id
-                    && ack_claims.sub == claims.sub
-                    && ack_claims.seat_id == claims.seat_id
-                {
-                    entitlements = ack_claims.entitlements;
-                }
-            }
-        }
-
         let expires_at = {
             let ks = self.keystore.lock().unwrap_or_else(|e| e.into_inner());
-            ks.record().last_validated_at_utc + ks.record().grace_duration_seconds
+            ks.record()
+                .last_validated_at_utc
+                .saturating_add(ks.record().grace_duration_seconds)
         };
 
         let snap = LeaseSnapshot {
@@ -337,7 +499,7 @@ impl SeatlingClient {
                 .clone()
                 .or_else(|| Some(claims.sub.clone())),
             buyer_email: claims.buyer_email.clone(),
-            last_verified_at_unix: Some(claims.iat),
+            last_verified_at_unix: Some(effective_verified_at),
             offline_expires_at_unix: Some(expires_at),
             is_within_offline_grace: is_authorized,
             portal_url: None,
@@ -567,14 +729,22 @@ impl SeatlingClient {
                     };
 
                     let _ = self.storage.write_lease(license_token);
+                    self.storage.delete_ack();
 
                     let grace_duration = claims.exp.saturating_sub(claims.iat).max(0);
                     self.keystore
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
-                        .update_timeline(&self.storage, claims.iat, grace_duration);
+                        .mutate(&self.storage, |rec| {
+                            rec.last_validated_at_utc = claims.iat;
+                            rec.high_water_mark_utc = rec.high_water_mark_utc.max(claims.iat);
+                            rec.grace_duration_seconds = grace_duration;
+                            rec.revocation_status = 0;
+                            rec.ack_state_tag = 0;
+                            rec.revocation_context = [0u8; 8];
+                        });
 
-                    let expires_at = claims.iat + grace_duration;
+                    let expires_at = claims.iat.saturating_add(grace_duration);
 
                     let snap = LeaseSnapshot {
                         status: StatusCode::Ok,
@@ -863,14 +1033,22 @@ impl SeatlingClient {
 
                         // Active heartbeat ACK: Persist ack token to disk for refreshed grace & entitlements
                         let _ = storage.write_ack(ack_token);
+                        let ack_tag = Self::compute_ack_tag(ack_token);
 
                         let grace_duration = ack.exp.saturating_sub(ack.iat).max(0);
                         keystore
                             .lock()
                             .unwrap_or_else(|e| e.into_inner())
-                            .update_timeline(storage, ack.iat, grace_duration);
+                            .mutate(storage, |rec| {
+                                rec.last_validated_at_utc = ack.iat;
+                                rec.high_water_mark_utc = rec.high_water_mark_utc.max(ack.iat);
+                                rec.grace_duration_seconds = grace_duration;
+                                rec.revocation_status = 0;
+                                rec.ack_state_tag = ack_tag;
+                                rec.revocation_context = [0u8; 8];
+                            });
 
-                        let expires_at = ack.iat + grace_duration;
+                        let expires_at = ack.iat.saturating_add(grace_duration);
 
                         let snap = LeaseSnapshot {
                             status: StatusCode::Ok,
@@ -1035,9 +1213,13 @@ impl SeatlingClient {
     }
 
     pub fn deactivate(&self) -> Result<(), SeatlingError> {
+        self.stop_heartbeat_worker();
+        self.keystore
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .rotate_keypair(&self.storage);
         self.storage.delete_lease();
         self.cache.clear();
-        self.stop_heartbeat_worker();
         Ok(())
     }
 
@@ -1228,6 +1410,7 @@ impl SeatlingClient {
                                                     )
                                                 {
                                                     let _ = storage.write_lease(tok);
+                                                    storage.delete_ack();
                                                     let grace = new_claims
                                                         .exp
                                                         .saturating_sub(new_claims.iat)
@@ -1235,11 +1418,17 @@ impl SeatlingClient {
                                                     keystore
                                                         .lock()
                                                         .unwrap_or_else(|e| e.into_inner())
-                                                        .update_timeline(
-                                                            &storage,
-                                                            new_claims.iat,
-                                                            grace,
-                                                        );
+                                                        .mutate(&storage, |rec| {
+                                                            rec.last_validated_at_utc =
+                                                                new_claims.iat;
+                                                            rec.high_water_mark_utc = rec
+                                                                .high_water_mark_utc
+                                                                .max(new_claims.iat);
+                                                            rec.grace_duration_seconds = grace;
+                                                            rec.revocation_status = 0;
+                                                            rec.ack_state_tag = 0;
+                                                            rec.revocation_context = [0u8; 8];
+                                                        });
                                                     let snap = LeaseSnapshot {
                                                         status: StatusCode::Ok,
                                                         is_authorized: true,
@@ -1250,7 +1439,7 @@ impl SeatlingClient {
                                                         buyer_email: new_claims.buyer_email,
                                                         last_verified_at_unix: Some(new_claims.iat),
                                                         offline_expires_at_unix: Some(
-                                                            new_claims.iat + grace,
+                                                            new_claims.iat.saturating_add(grace),
                                                         ),
                                                         is_within_offline_grace: true,
                                                         portal_url: None,
