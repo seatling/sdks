@@ -2,7 +2,7 @@
 
 use crate::client::SeatlingClient;
 use crate::types::{SeatlingConfig, StatusCode};
-use std::ffi::CStr;
+use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
@@ -43,11 +43,10 @@ pub unsafe extern "C" fn seatling_client_new(
             Some(s) => s,
             None => return std::ptr::null_mut(),
         };
-        let entry_size = std::mem::size_of::<seatling_key_entry_t>();
-        let max_entries = (isize::MAX as usize) / entry_size.max(1);
+        const MAX_PUBLIC_KEYS: usize = 64;
         let ws_keys = if !cfg.public_keys.is_null()
             && cfg.public_keys_count > 0
-            && cfg.public_keys_count <= max_entries
+            && cfg.public_keys_count <= MAX_PUBLIC_KEYS
         {
             let mut map = std::collections::HashMap::new();
             // SAFETY: `cfg.public_keys` is non-null and within `isize::MAX` byte bounds.
@@ -306,6 +305,90 @@ pub unsafe extern "C" fn seatling_client_get_entitlement_f64(
     .unwrap_or(default_value)
 }
 
+#[repr(C)]
+pub struct seatling_activation_result_t {
+    pub success: bool,
+    pub status: StatusCode,
+    pub message: *mut c_char,
+    pub seat_id: *mut c_char,
+    pub portal_url: *mut c_char,
+    pub buyer_email: *mut c_char,
+    pub seats_active: i32,
+    pub seat_limit: i32,
+}
+
+fn string_to_c_char(s: Option<String>) -> *mut c_char {
+    match s {
+        Some(val) => CString::new(val)
+            .map(|cs| cs.into_raw())
+            .unwrap_or(std::ptr::null_mut()),
+        None => std::ptr::null_mut(),
+    }
+}
+
+fn free_c_char(p: *mut c_char) {
+    if !p.is_null() {
+        unsafe {
+            drop(CString::from_raw(p));
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn seatling_activation_result_free(res: *mut seatling_activation_result_t) {
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        if !res.is_null() {
+            let r = unsafe { &mut *res };
+            free_c_char(r.message);
+            r.message = std::ptr::null_mut();
+            free_c_char(r.seat_id);
+            r.seat_id = std::ptr::null_mut();
+            free_c_char(r.portal_url);
+            r.portal_url = std::ptr::null_mut();
+            free_c_char(r.buyer_email);
+            r.buyer_email = std::ptr::null_mut();
+        }
+    }));
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn seatling_client_activate_detailed(
+    client: *mut SeatlingClient,
+    license_key: *const c_char,
+    out_result: *mut seatling_activation_result_t,
+) -> bool {
+    catch_unwind(AssertUnwindSafe(|| {
+        if client.is_null() || license_key.is_null() || out_result.is_null() {
+            return false;
+        }
+        let c = unsafe { &*client };
+        let out = unsafe { &mut *out_result };
+        if let Some(key) = unsafe { c_str_to_string(license_key) } {
+            let res = c.activate(&key);
+            out.success = res.success;
+            out.status = res.status;
+            out.message = string_to_c_char(Some(res.message));
+            out.seat_id = string_to_c_char(res.seat_id);
+            out.portal_url = string_to_c_char(res.portal_url);
+            out.buyer_email = string_to_c_char(res.buyer_email);
+            out.seats_active = res.seats_active.unwrap_or(-1);
+            out.seat_limit = res.seat_limit.unwrap_or(-1);
+            res.success
+        } else {
+            out.success = false;
+            out.status = StatusCode::InvalidConfiguration;
+            out.message = string_to_c_char(Some("Invalid license key string".to_string()));
+            out.seat_id = std::ptr::null_mut();
+            out.portal_url = std::ptr::null_mut();
+            out.buyer_email = std::ptr::null_mut();
+            out.seats_active = -1;
+            out.seat_limit = -1;
+            false
+        }
+    }))
+    .unwrap_or(false)
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn seatling_client_activate(
     client: *mut SeatlingClient,
@@ -349,6 +432,28 @@ pub unsafe extern "C" fn seatling_client_deactivate(client: *mut SeatlingClient)
         // SAFETY: Caller guarantees `client` is a valid pointer.
         let c = unsafe { &*client };
         c.deactivate().is_ok()
+    }))
+    .unwrap_or(false)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn seatling_client_deactivate_detailed(
+    client: *mut SeatlingClient,
+    timeout_ms: u32,
+    force: bool,
+) -> bool {
+    catch_unwind(AssertUnwindSafe(|| {
+        if client.is_null() {
+            return false;
+        }
+        // SAFETY: Caller guarantees `client` is a valid pointer.
+        let c = unsafe { &*client };
+        let timeout = if timeout_ms == 0 {
+            std::time::Duration::from_secs(8)
+        } else {
+            std::time::Duration::from_millis(timeout_ms as u64)
+        };
+        c.deactivate_with_options(timeout, force).is_ok()
     }))
     .unwrap_or(false)
 }

@@ -3,7 +3,9 @@
   "packages": {
     ".": {
       "release-type": "node",
-      "package-name": "@seatling/node",
+      "package-name": "seatling-sdks",
+      "include-component-in-tag": false,
+      "pull-request-title-pattern": "chore: release ${version}",
       "extra-files": [
         "package.json",
         "crates/seatling-node/package.json",

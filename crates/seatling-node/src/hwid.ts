@@ -11,7 +11,7 @@ export class HWIDCollector {
    */
   public static getComponents(): HWIDComponents {
     if (this.cachedComponents) {
-      return this.cachedComponents;
+      return { ...this.cachedComponents };
     }
     const c = native.getHwidComponents();
     this.cachedComponents = {
@@ -20,7 +20,7 @@ export class HWIDCollector {
       disk: c.disk,
       os_uuid: c.osUuid,
     };
-    return this.cachedComponents;
+    return { ...this.cachedComponents };
   }
 
   /**

@@ -224,10 +224,21 @@ pub fn collect_windows() -> PlatformIdentifiers {
             },
         );
 
-    // 4. Primary disk serial via %SystemDrive%\
-    let sys_drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".to_string());
-    let root_path_str = format!("{}\\\0", sys_drive.trim_end_matches('\\'));
-    let root_path: Vec<u16> = root_path_str.encode_utf16().collect();
+    // 4. Primary disk serial via authoritative Windows system directory drive root
+    let mut root_path: Vec<u16> = "C:\\\0".encode_utf16().collect();
+    unsafe {
+        let mut sys_dir = [0u16; 260];
+        let len = windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW(
+            sys_dir.as_mut_ptr(),
+            sys_dir.len() as u32,
+        );
+        if len >= 3 && sys_dir[1] == b':' as u16 && sys_dir[2] == b'\\' as u16 {
+            root_path = vec![sys_dir[0], b':' as u16, b'\\' as u16, 0u16];
+        } else if let Ok(sys_drive) = std::env::var("SystemDrive") {
+            let root_path_str = format!("{}\\\0", sys_drive.trim_end_matches('\\'));
+            root_path = root_path_str.encode_utf16().collect();
+        }
+    }
     let mut disk = None;
     unsafe {
         let mut serial = 0u32;

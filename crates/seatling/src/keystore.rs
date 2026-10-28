@@ -3,14 +3,14 @@ use crate::jwt::{encode_eddsa_jwt, JwtHeader};
 use crate::platform::SealingAnchors;
 use crate::storage::StorageManager;
 use crate::types::{
-    ActivationPopClaims, AttestationTier, HWIDComponents, HeartbeatChallengeClaims, StatusCode,
-    StoredKeystoreFile,
+    ActivationPopClaims, AttestationTier, DeactivationClaims, HWIDComponents,
+    HeartbeatChallengeClaims, StatusCode, StoredKeystoreFile,
 };
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
-use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
+use ed25519_dalek::{SigningKey, VerifyingKey};
 use hkdf::Hkdf;
 use sha2::Sha256;
 use std::time::Duration;
@@ -192,6 +192,27 @@ impl HardwareSealedKeystore {
         anchors: &SealingAnchors,
         storage: &StorageManager,
     ) -> Result<Self, &'static str> {
+        let current_anchor = storage.read_secret_anchor();
+        match Self::try_unseal_v2_internal(stored, anchors, current_anchor) {
+            Ok(ks) => Ok(ks),
+            Err(e) => {
+                if let Some(prev_anchor) = storage.read_secret_anchor_prev() {
+                    if let Ok(ks) = Self::try_unseal_v2_internal(stored, anchors, Some(prev_anchor))
+                    {
+                        storage.restore_secret_anchor_backup();
+                        return Ok(ks);
+                    }
+                }
+                Err(e)
+            }
+        }
+    }
+
+    fn try_unseal_v2_internal(
+        stored: &StoredKeystoreFile,
+        anchors: &SealingAnchors,
+        anchor_opt: Option<[u8; 32]>,
+    ) -> Result<Self, &'static str> {
         let iv = BASE64.decode(&stored.iv).map_err(|_| "invalid iv")?;
         let ct = BASE64
             .decode(&stored.ciphertext)
@@ -216,7 +237,7 @@ impl HardwareSealedKeystore {
                     }
                     secret32.copy_from_slice(&unprotected);
                     zeroize_slice(&mut unprotected);
-                    if let Some(mut anchor) = storage.read_secret_anchor() {
+                    if let Some(mut anchor) = anchor_opt {
                         for (s, a) in secret32.iter_mut().zip(anchor.iter()) {
                             *s ^= *a;
                         }
@@ -225,23 +246,7 @@ impl HardwareSealedKeystore {
                 } else {
                     return Err("missing dpapi blob");
                 }
-            } else if let Some(ref sw_b64) = stored.sw_secret {
-                let sw_bytes = BASE64.decode(sw_b64).map_err(|_| "invalid sw_secret")?;
-                if sw_bytes.len() != 32 {
-                    return Err("invalid sw len");
-                }
-                secret32.copy_from_slice(&sw_bytes);
-            } else {
-                return Err("missing sw_secret");
-            }
-        }
-
-        #[cfg(not(target_os = "windows"))]
-        {
-            if stored.tier == AttestationTier::HardwareSealed {
-                let mut anchor = storage
-                    .read_secret_anchor()
-                    .ok_or("missing keystore secret anchor")?;
+            } else if let Some(mut anchor) = anchor_opt {
                 secret32.copy_from_slice(&anchor);
                 zeroize_slice(&mut anchor);
             } else if let Some(ref sw_b64) = stored.sw_secret {
@@ -251,7 +256,23 @@ impl HardwareSealedKeystore {
                 }
                 secret32.copy_from_slice(&sw_bytes);
             } else {
-                return Err("missing sw_secret");
+                return Err("missing keystore secret anchor");
+            }
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            if let Some(mut anchor) = anchor_opt {
+                secret32.copy_from_slice(&anchor);
+                zeroize_slice(&mut anchor);
+            } else if let Some(ref sw_b64) = stored.sw_secret {
+                let sw_bytes = BASE64.decode(sw_b64).map_err(|_| "invalid sw_secret")?;
+                if sw_bytes.len() != 32 {
+                    return Err("invalid sw len");
+                }
+                secret32.copy_from_slice(&sw_bytes);
+            } else {
+                return Err("missing keystore secret anchor");
             }
         }
 
@@ -391,7 +412,9 @@ impl HardwareSealedKeystore {
 
         #[allow(unused_mut)]
         let mut dpapi_blob = None;
-        let mut sw_secret = None;
+        let sw_secret = None;
+
+        storage.backup_secret_anchor();
 
         #[cfg(target_os = "windows")]
         {
@@ -408,17 +431,13 @@ impl HardwareSealedKeystore {
                 }
                 zeroize_slice(&mut anchor);
             } else {
-                sw_secret = Some(BASE64.encode(secret32));
+                let _ = storage.write_secret_anchor(&secret32);
             }
         }
 
         #[cfg(not(target_os = "windows"))]
         {
-            if self.tier == AttestationTier::HardwareSealed {
-                let _ = storage.write_secret_anchor(&secret32);
-            } else {
-                sw_secret = Some(BASE64.encode(secret32));
-            }
+            let _ = storage.write_secret_anchor(&secret32);
         }
 
         let mut wrapping_key = Self::derive_wrapping_key_v2(&secret32, anchors, self.tier);
@@ -426,6 +445,7 @@ impl HardwareSealedKeystore {
 
         let Ok(cipher) = Aes256Gcm::new_from_slice(&wrapping_key) else {
             zeroize_slice(&mut wrapping_key);
+            storage.cleanup_secret_anchor_backup();
             return;
         };
         zeroize_slice(&mut wrapping_key);
@@ -466,6 +486,8 @@ impl HardwareSealedKeystore {
                 let _ = storage.write_keystore(&json);
             }
         }
+
+        storage.cleanup_secret_anchor_backup();
     }
 
     fn build_aad(version: u32, tier: AttestationTier, public_key: &str) -> Vec<u8> {
@@ -651,12 +673,16 @@ impl HardwareSealedKeystore {
         nonce: &str,
         timestamp: i64,
     ) -> String {
-        let payload = format!(
-            "seatling:deactivate:v1|{}|{}|{}|{}|{}",
-            key, seat_id, hwid, nonce, timestamp
-        );
-        let signature = self.signing_key.sign(payload.as_bytes());
-        BASE64.encode(signature.to_bytes())
+        let header = JwtHeader::new("seatling-deactivate+jwt", None);
+        let claims = DeactivationClaims {
+            iss: self.public_key_base64(),
+            sub: key.to_string(),
+            seat_id: seat_id.to_string(),
+            hwid: hwid.to_string(),
+            iat: timestamp,
+            jti: nonce.to_string(),
+        };
+        encode_eddsa_jwt(&header, &claims, &self.signing_key).unwrap_or_default()
     }
 }
 
@@ -699,6 +725,8 @@ fn dpapi_protect(secret: &[u8], entropy: &[u8]) -> Result<Vec<u8>, String> {
         }
         let slice = std::slice::from_raw_parts(data_out.pbData, data_out.cbData as usize);
         let result = slice.to_vec();
+        std::ptr::write_bytes(data_out.pbData, 0, data_out.cbData as usize);
+        std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
         LocalFree(data_out.pbData as *mut _);
         Ok(result)
     }
@@ -743,6 +771,8 @@ fn dpapi_unprotect(ciphertext: &[u8], entropy: &[u8]) -> Result<Vec<u8>, String>
         }
         let slice = std::slice::from_raw_parts(data_out.pbData, data_out.cbData as usize);
         let result = slice.to_vec();
+        std::ptr::write_bytes(data_out.pbData, 0, data_out.cbData as usize);
+        std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
         LocalFree(data_out.pbData as *mut _);
         Ok(result)
     }

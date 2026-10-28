@@ -156,15 +156,25 @@ describe('HardwareSealedKeystore', () => {
     const isHbValid = crypto.verify(null, Buffer.from(`${hbParts[0]}.${hbParts[1]}`, 'utf8'), pubKeyObject, Buffer.from(hbParts[2], 'base64url'));
     assert.strictEqual(isHbValid, true);
 
-    // 3. signDeactivation (returns standard base64 signature over formatted payload string)
-    const deactSigB64 = keystore.signDeactivation(key, 'seat_1', hwid, 'nonce_deact', timestamp);
-    assert.ok(deactSigB64);
-    const deactPayload = `seatling:deactivate:v1|${key}|seat_1|${hwid}|nonce_deact|${timestamp}`;
+    // 3. signDeactivation (returns signed EdDSA JWT with typ: seatling-deactivate+jwt)
+    const deactJwt = keystore.signDeactivation(key, 'seat_1', hwid, 'nonce_deact', timestamp);
+    assert.ok(deactJwt);
+    const deactParts = deactJwt.split('.');
+    assert.strictEqual(deactParts.length, 3);
+    const deactHeader = JSON.parse(Buffer.from(deactParts[0], 'base64url').toString('utf8'));
+    assert.strictEqual(deactHeader.alg, 'EdDSA');
+    assert.strictEqual(deactHeader.typ, 'seatling-deactivate+jwt');
+    const deactClaims = JSON.parse(Buffer.from(deactParts[1], 'base64url').toString('utf8'));
+    assert.strictEqual(deactClaims.sub, key);
+    assert.strictEqual(deactClaims.seat_id, 'seat_1');
+    assert.strictEqual(deactClaims.hwid, hwid);
+    assert.strictEqual(deactClaims.jti, 'nonce_deact');
+    assert.strictEqual(deactClaims.iat, timestamp);
     const isDeactValid = crypto.verify(
       null,
-      Buffer.from(deactPayload, 'utf8'),
+      Buffer.from(`${deactParts[0]}.${deactParts[1]}`, 'utf8'),
       pubKeyObject,
-      Buffer.from(deactSigB64, 'base64')
+      Buffer.from(deactParts[2], 'base64url')
     );
     assert.strictEqual(isDeactValid, true);
   });

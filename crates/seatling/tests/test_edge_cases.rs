@@ -1,6 +1,6 @@
 use base64::Engine;
 use seatling::jwt::{encode_eddsa_jwt, JwtHeader};
-use seatling::types::{LicenseJwtClaims, SeatlingConfig, StatusCode};
+use seatling::types::{HeartbeatAckClaims, LicenseJwtClaims, SeatlingConfig, StatusCode};
 use seatling::verifier::TokenVerifier;
 use seatling::SeatlingClient;
 use std::time::Duration;
@@ -392,4 +392,128 @@ fn test_security_hardening_regressions() {
     }
 
     let _ = std::fs::remove_dir_all(&tmp_dir);
+}
+
+#[test]
+fn test_security_audit_remediations_v7() {
+    use base64::Engine;
+    use seatling::jwt::decode_and_verify_jwt;
+
+    let mut csprng = rand::rng();
+    let signing_key = ed25519_dalek::SigningKey::generate(&mut csprng);
+    let verifying_key = signing_key.verifying_key();
+    let now = 1774000000i64;
+
+    // 1. JWT length limit (> 32KB)
+    let huge_token = "a".repeat(33 * 1024);
+    assert!(
+        decode_and_verify_jwt::<serde_json::Value, _>(&huge_token, |_| Ok(verifying_key)).is_err()
+    );
+
+    // 2. Pre-auth JWT deserialization rejection with invalid signature
+    let header = JwtHeader::new("seatling-license+jwt", Some("kid_audit"));
+    let claims = LicenseJwtClaims {
+        iss: "https://api.seatling.com".to_string(),
+        sub: "key_audit".to_string(),
+        aud: "ws_audit".to_string(),
+        product_id: "prod_audit".to_string(),
+        seat_id: "seat_audit".to_string(),
+        masked_key: None,
+        buyer_email: None,
+        hwid: "hwid_audit".to_string(),
+        device_key: None,
+        app_version: "1.0.0".to_string(),
+        iat: now,
+        nbf: None,
+        exp: now + 3600,
+        offline_grace_days: None,
+        status: "active".to_string(),
+        entitlements: std::collections::HashMap::new(),
+    };
+    let valid_jwt = encode_eddsa_jwt(&header, &claims, &signing_key).unwrap();
+    let parts: Vec<&str> = valid_jwt.split('.').collect();
+    let tampered_sig_jwt = format!("{}.{}.{}", parts[0], parts[1], "A".repeat(86));
+    assert!(
+        decode_and_verify_jwt::<LicenseJwtClaims, _>(&tampered_sig_jwt, |_| Ok(verifying_key))
+            .is_err()
+    );
+
+    // 3. Heartbeat ACK validation: verify_heartbeat_ack_token_at rejects future iat and expired exp
+    let mut public_keys = std::collections::HashMap::new();
+    let vk_b64 = base64::engine::general_purpose::STANDARD.encode(verifying_key.to_bytes());
+    public_keys.insert("kid_audit".to_string(), vk_b64.clone());
+    let verifier = TokenVerifier::new(&public_keys).unwrap();
+
+    let ack_header = JwtHeader::new("seatling-heartbeat-ack+jwt", Some("kid_audit"));
+    let mut ack_claims = HeartbeatAckClaims {
+        jti: "nonce_audit".to_string(),
+        iss: "https://api.seatling.com".to_string(),
+        aud: "ws_audit".to_string(),
+        sub: "sub_audit".to_string(),
+        seat_id: "seat_audit".to_string(),
+        product_id: "prod_audit".to_string(),
+        status: "active".to_string(),
+        iat: now + 400, // exceeds 300s skew tolerance
+        exp: now + 3600,
+        entitlements: std::collections::HashMap::new(),
+    };
+    let future_ack_jwt = encode_eddsa_jwt(&ack_header, &ack_claims, &signing_key).unwrap();
+    let res_future = verifier.verify_heartbeat_ack_token_at(
+        &future_ack_jwt,
+        "nonce_audit",
+        "ws_audit",
+        "prod_audit",
+        "sub_audit",
+        "seat_audit",
+        now,
+    );
+    assert_eq!(
+        res_future.unwrap_err().0,
+        StatusCode::TamperOrSignatureInvalid
+    );
+
+    // Expired ACK
+    ack_claims.iat = now - 3600;
+    ack_claims.exp = now - 100;
+    let expired_ack_jwt = encode_eddsa_jwt(&ack_header, &ack_claims, &signing_key).unwrap();
+    let res_expired = verifier.verify_heartbeat_ack_token_at(
+        &expired_ack_jwt,
+        "nonce_audit",
+        "ws_audit",
+        "prod_audit",
+        "sub_audit",
+        "seat_audit",
+        now,
+    );
+    assert_eq!(
+        res_expired.unwrap_err().0,
+        StatusCode::TamperOrSignatureInvalid
+    );
+
+    // 4. Identifier and key count validation in SeatlingClient::new
+    let base_cfg = SeatlingConfig {
+        workspace_id: "ws_valid".to_string(),
+        product_id: "prod_valid".to_string(),
+        public_keys: public_keys.clone(),
+        app_version: "1.0.0".to_string(),
+        api_base_url: "https://api.seatling.com".to_string(),
+        heartbeat_interval_seconds: 14400,
+        storage_dir: None,
+    };
+
+    let mut bad_ws = base_cfg.clone();
+    bad_ws.workspace_id = "...///...".to_string();
+    assert!(SeatlingClient::new(bad_ws).is_err());
+
+    let mut bad_prod = base_cfg.clone();
+    bad_prod.product_id = "".to_string();
+    assert!(SeatlingClient::new(bad_prod).is_err());
+
+    let mut too_many_keys = base_cfg;
+    for i in 0..65 {
+        too_many_keys
+            .public_keys
+            .insert(format!("kid_{}", i), vk_b64.clone());
+    }
+    assert!(SeatlingClient::new(too_many_keys).is_err());
 }

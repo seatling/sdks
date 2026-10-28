@@ -1,3 +1,4 @@
+use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use seatling::jwt::{decode_and_verify_jwt, encode_eddsa_jwt, JwtHeader};
 use seatling::types::{
@@ -214,8 +215,10 @@ fn test_client_activation_success_and_error_codes() {
         403,
         "Forbidden",
         serde_json::json!({
-            "code": "VERSION_NOT_ENTITLED",
-            "message": "App version 1.0.0 is not entitled",
+            "type": "https://api.seatling.com/errors/version-not-entitled",
+            "status": 403,
+            "title": "Version Not Entitled",
+            "detail": "App version 1.0.0 is not entitled",
             "portal_url": "https://portal.seatling.com/upgrade"
         })
         .to_string(),
@@ -235,8 +238,10 @@ fn test_client_activation_success_and_error_codes() {
         403,
         "Forbidden",
         serde_json::json!({
-            "code": "KEY_REVOKED_UPDATE_REQUIRED",
-            "message": "Key revoked",
+            "type": "https://api.seatling.com/errors/key-revoked",
+            "status": 403,
+            "title": "Signing Key Revoked",
+            "detail": "Key revoked",
             "portal_url": "https://portal.seatling.com/update"
         })
         .to_string(),
@@ -252,8 +257,10 @@ fn test_client_activation_success_and_error_codes() {
         403,
         "Forbidden",
         serde_json::json!({
-            "code": "SEATS_EXHAUSTED",
-            "message": "Seat quota exhausted",
+            "type": "https://api.seatling.com/errors/seats-exhausted",
+            "status": 403,
+            "title": "Seats Exhausted",
+            "detail": "Seat quota exhausted",
             "portal_url": "https://portal.seatling.com/seats",
             "buyer_email": "b***@example.com",
             "seats_active": 5,
@@ -274,8 +281,10 @@ fn test_client_activation_success_and_error_codes() {
         409,
         "Conflict",
         serde_json::json!({
-            "code": "REQUIRES_PORTAL_DEACTIVATION",
-            "message": "Rotation limit reached",
+            "type": "https://api.seatling.com/errors/requires-portal-deactivation",
+            "status": 409,
+            "title": "Requires Customer Portal Deactivation",
+            "detail": "Rotation limit reached",
             "portal_url": "https://portal.seatling.com/manage"
         })
         .to_string(),
@@ -285,7 +294,26 @@ fn test_client_activation_success_and_error_codes() {
     assert!(!res_portal.success);
     assert_eq!(res_portal.status, StatusCode::RequiresPortalDeactivation);
 
-    // 5. Success: Valid 200 OK activation
+    // 5. Error: 403 LICENSE_SUSPENDED
+    server.set_route(
+        "/v1/licenses/activate",
+        403,
+        "Forbidden",
+        serde_json::json!({
+            "type": "https://api.seatling.com/errors/license-suspended/",
+            "status": 403,
+            "title": "License Suspended or Revoked",
+            "detail": ""
+        })
+        .to_string(),
+    );
+
+    let res_suspended = client.activate("SEAT-SUSPENDED-KEY");
+    assert!(!res_suspended.success);
+    assert_eq!(res_suspended.status, StatusCode::LicenseSuspendedOrRevoked);
+    assert_eq!(res_suspended.message, "License Suspended or Revoked");
+
+    // 6. Success: Valid 200 OK activation
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -543,8 +571,145 @@ fn test_client_heartbeat_and_seat_locking() {
     assert!(status_offline.is_authorized);
     assert!(client.is_authorized());
 
-    // 4. Client deactivation
+    // 4. Client deactivation with online endpoint
+    server.set_route(
+        "/v1/licenses/deactivate",
+        200,
+        "OK",
+        serde_json::json!({
+            "success": true,
+            "message": "Seat successfully deactivated"
+        })
+        .to_string(),
+    );
+
     assert!(client.deactivate().is_ok());
+    assert!(!client.is_authorized());
+    assert_eq!(client.status(), StatusCode::NotActivated);
+    assert!(storage.read_lease().is_none());
+
+    // Verify captured deactivation request payload
+    {
+        let bodies = server.captured_bodies.lock().unwrap();
+        let deact_req = bodies
+            .last()
+            .expect("must have captured deactivation request");
+        let json_val: serde_json::Value = serde_json::from_str(deact_req).expect("valid json body");
+        let token_str = json_val["token"]
+            .as_str()
+            .expect("must contain token field");
+        let parts: Vec<&str> = token_str.split('.').collect();
+        assert_eq!(parts.len(), 3, "Deactivation token must be 3-part JWT");
+    }
+
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+}
+
+#[test]
+fn test_client_deactivate_network_failure_and_force() {
+    let tmp_dir = std::env::temp_dir().join(format!("seatling_test_deact_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    let _ = std::fs::create_dir_all(&tmp_dir);
+
+    let server = MockHttpServer::start();
+    let now = 1730000000;
+
+    let mut seed = [0u8; 32];
+    seed[0] = 77;
+    let workspace_sk = ed25519_dalek::SigningKey::from_bytes(&seed);
+    let workspace_vk = workspace_sk.verifying_key();
+    let workspace_pub_b64 = BASE64.encode(workspace_vk.as_bytes());
+
+    let mut keys = std::collections::HashMap::new();
+    keys.insert("ws_2026_test".to_string(), workspace_pub_b64);
+
+    let config = SeatlingConfig {
+        workspace_id: "ws_net_rust".to_string(),
+        product_id: "prod_net_rust".to_string(),
+        public_keys: keys,
+        app_version: "1.0.0".to_string(),
+        api_base_url: format!("http://127.0.0.1:{}", server.port),
+        heartbeat_interval_seconds: 3600,
+        storage_dir: Some(tmp_dir.to_str().unwrap().to_string()),
+    };
+
+    let client = SeatlingClient::new(config)
+        .unwrap()
+        .with_time_source(std::sync::Arc::new(move || now));
+
+    let storage = seatling::storage::StorageManager::new(
+        "ws_net_rust",
+        "prod_net_rust",
+        Some(tmp_dir.to_str().unwrap()),
+    );
+    let device_vk = {
+        let ks = seatling::keystore::HardwareSealedKeystore::load_or_generate(&storage);
+        ks.verifying_key()
+    };
+    let device_vk_b64 = BASE64.encode(device_vk.as_bytes());
+
+    // 1. Successful activation
+    let license_claims = LicenseJwtClaims {
+        iss: "seatling".to_string(),
+        sub: "SEAT-DEACT-FORCE-TEST".to_string(),
+        aud: "ws_net_rust".to_string(),
+        product_id: "prod_net_rust".to_string(),
+        seat_id: "seat_deact_01".to_string(),
+        masked_key: Some("SEAT-****-TEST".to_string()),
+        buyer_email: Some("buyer@test.com".to_string()),
+        hwid: seatling::hwid::HWIDCollector::get_hwid(),
+        device_key: Some(device_vk_b64),
+        app_version: "1.0.0".to_string(),
+        iat: now,
+        nbf: Some(now),
+        exp: now + 14 * 86400,
+        offline_grace_days: Some(14),
+        status: "active".to_string(),
+        entitlements: std::collections::HashMap::new(),
+    };
+
+    server.set_route(
+        "/v1/licenses/activate",
+        200,
+        "OK",
+        serde_json::json!({
+            "token": encode_eddsa_jwt(
+                &JwtHeader::new("seatling-license+jwt", Some("ws_2026_test")),
+                &license_claims,
+                &workspace_sk
+            ).unwrap()
+        })
+        .to_string(),
+    );
+
+    let act_res = client.activate("SEAT-DEACT-FORCE-TEST");
+    assert!(act_res.success);
+    assert!(client.is_authorized());
+    assert!(storage.read_lease().is_some());
+
+    // 2. Server deactivation returns HTTP 500 (Network/Server outage)
+    server.set_route(
+        "/v1/licenses/deactivate",
+        500,
+        "Internal Error",
+        "{}".to_string(),
+    );
+
+    // With force = false: failure must be reported and local lease preserved
+    let res_no_force = client.deactivate_with_options(Duration::from_millis(500), false);
+    assert!(
+        res_no_force.is_err(),
+        "Must return error when force is false and server fails"
+    );
+    assert!(
+        client.is_authorized(),
+        "Lease must remain authorized when force is false"
+    );
+    assert!(storage.read_lease().is_some());
+
+    // With force = true: local lease is purged despite network error
+    let res_force = client.deactivate_with_options(Duration::from_millis(500), true);
+    assert!(res_force.is_ok(), "Must succeed locally when force is true");
     assert!(!client.is_authorized());
     assert_eq!(client.status(), StatusCode::NotActivated);
     assert!(storage.read_lease().is_none());

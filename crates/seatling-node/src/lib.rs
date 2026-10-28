@@ -183,8 +183,12 @@ impl SeatlingClientNative {
     }
 
     #[napi]
-    pub fn deactivate(&self) -> bool {
-        self.inner.deactivate().is_ok()
+    pub fn deactivate(&self, timeout_ms: Option<u32>, force: Option<bool>) -> bool {
+        let timeout = std::time::Duration::from_millis(timeout_ms.unwrap_or(8000) as u64);
+        let force_val = force.unwrap_or(true);
+        self.inner
+            .deactivate_with_options(timeout, force_val)
+            .is_ok()
     }
 
     #[napi]
@@ -277,6 +281,14 @@ impl HardwareSealedKeystoreNative {
     }
 
     #[napi]
+    pub fn get_attestation_tier(&self) -> String {
+        match self.inner.attestation_tier() {
+            seatling::types::AttestationTier::HardwareSealed => "hardware_sealed".to_string(),
+            seatling::types::AttestationTier::Software => "software".to_string(),
+        }
+    }
+
+    #[napi]
     #[allow(clippy::too_many_arguments)]
     pub fn sign_activation_pop_jwt(
         &self,
@@ -350,6 +362,9 @@ impl HardwareSealedKeystoreNative {
     ) -> String {
         let comps = HWIDCollector::get_components();
         let kids = supported_kids.unwrap_or_default();
+        let mut nonce_bytes = [0u8; 16];
+        rand::fill(&mut nonce_bytes);
+        let nonce = hex::encode(nonce_bytes);
         self.inner.sign_activation_proof(
             &key,
             &hwid,
@@ -358,7 +373,7 @@ impl HardwareSealedKeystoreNative {
             "https://api.seatling.com",
             &kids,
             timestamp,
-            "nonce",
+            &nonce,
         )
     }
 
@@ -424,6 +439,35 @@ impl TokenVerifierNative {
         let claims = self
             .inner
             .verify_license_token(&token, &expected_workspace_id, &expected_product_id)
+            .map_err(|(status, msg)| {
+                napi::Error::from_reason(format!("{}: {}", status.as_str(), msg))
+            })?;
+        serde_json::to_string(&claims).map_err(|e| napi::Error::from_reason(e.to_string()))
+    }
+
+    #[napi]
+    pub fn verify_license_token_bound(
+        &self,
+        token: String,
+        expected_workspace_id: String,
+        expected_product_id: String,
+        expected_hwid: String,
+        expected_device_pubkey_base64: String,
+    ) -> napi::Result<String> {
+        let vk = seatling::verifier::TokenVerifier::parse_verifying_key_base64(
+            &expected_device_pubkey_base64,
+        )
+        .map_err(|e| napi::Error::from_reason(format!("Invalid expected device pubkey: {}", e)))?;
+
+        let claims = self
+            .inner
+            .verify_license_token_bound(
+                &token,
+                &expected_workspace_id,
+                &expected_product_id,
+                &expected_hwid,
+                &vk,
+            )
             .map_err(|(status, msg)| {
                 napi::Error::from_reason(format!("{}: {}", status.as_str(), msg))
             })?;

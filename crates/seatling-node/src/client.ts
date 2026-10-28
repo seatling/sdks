@@ -7,11 +7,41 @@ import {
   SeatlingConfig,
 } from './types';
 
+function sanitizeEntitlements(raw: any): Record<string, EntitlementValue> {
+  const result: Record<string, EntitlementValue> = {};
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    for (const key of Object.keys(raw)) {
+      if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
+        continue;
+      }
+      const val = raw[key];
+      if (typeof val === 'boolean' || typeof val === 'number' || typeof val === 'string') {
+        result[key] = val;
+      }
+    }
+  }
+  return result;
+}
+
+function clampTimeoutMs(timeoutMs?: number, defaultMs: number = 8000): number {
+  if (timeoutMs === undefined || Number.isNaN(timeoutMs)) {
+    return defaultMs;
+  }
+  if (timeoutMs < 0) {
+    return 1;
+  }
+  if (timeoutMs > 0xffffffff) {
+    return 0xffffffff;
+  }
+  return Math.floor(timeoutMs);
+}
+
 function convertNativeLeaseStatus(nativeStatus: NativeLeaseStatus): LeaseStatus {
   let entitlements: Record<string, EntitlementValue> = {};
   if (nativeStatus.entitlementsJson) {
     try {
-      entitlements = JSON.parse(nativeStatus.entitlementsJson);
+      const parsed = JSON.parse(nativeStatus.entitlementsJson);
+      entitlements = sanitizeEntitlements(parsed);
     } catch {
       entitlements = {};
     }
@@ -99,14 +129,14 @@ export class SeatlingClient {
    * Verifies hardware-sealed keystore, clock tampering, and performs heartbeat if needed.
    */
   public isValidBlocking(timeoutMs: number = 8000): boolean {
-    return this.nativeClient.isValidBlocking(timeoutMs);
+    return this.nativeClient.isValidBlocking(clampTimeoutMs(timeoutMs));
   }
 
   /**
    * Synchronous pre-flight status query per HARDWARE_ANCHOR_V3 §7.4.1.
    */
   public statusBlocking(timeoutMs: number = 8000): LeaseStatus {
-    return convertNativeLeaseStatus(this.nativeClient.statusBlocking(timeoutMs));
+    return convertNativeLeaseStatus(this.nativeClient.statusBlocking(clampTimeoutMs(timeoutMs)));
   }
 
   /**
@@ -179,14 +209,15 @@ export class SeatlingClient {
    * Triggers a heartbeat with explicit timeout in milliseconds.
    */
   public async heartbeatWithTimeout(timeoutMs: number = 8000): Promise<LeaseStatus> {
-    return convertNativeLeaseStatus(this.nativeClient.heartbeatWithTimeout(timeoutMs));
+    return convertNativeLeaseStatus(this.nativeClient.heartbeatWithTimeout(clampTimeoutMs(timeoutMs)));
   }
 
   /**
-   * Gracefully releases seat allocation with server-echoed nonce signature.
+   * Explicitly releases seat allocation on the Seatling server via EdDSA JWT deactivation proof.
+   * If the network is unreachable, defaults to completing local lease teardown (force = true).
    */
-  public async deactivate(): Promise<boolean> {
-    return this.nativeClient.deactivate();
+  public async deactivate(timeoutMs: number = 8000, force: boolean = true): Promise<boolean> {
+    return this.nativeClient.deactivate(clampTimeoutMs(timeoutMs), force);
   }
 
   /**

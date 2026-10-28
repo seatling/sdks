@@ -149,7 +149,8 @@ seatling-sdks/
 ├── .github/
 │   └── workflows/
 │       ├── ci.yml                 # Multi-platform CI (OpenAPI, Rust core, Node SDK, C++ SDK, Go SDK)
-│       ├── publish-release.yml    # Multi-platform binary compilation, release assets, NPM & Go publishing
+│       ├── publish-release.yml    # Multi-platform binary compilation, release assets, & NPM publishing
+│       ├── mirror.yml             # Dedicated Go SDK repository mirroring (seatling/sdk-go)
 │       └── release-please.yml     # Release Please automated versioning & release orchestration
 ├── crates/
 │   ├── seatling/                  # Rust Core Engine & C-ABI (rlib, staticlib, cdylib)

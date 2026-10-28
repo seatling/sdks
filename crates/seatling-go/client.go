@@ -99,13 +99,31 @@ func (c *Client) release() {
 	runtime.KeepAlive(c)
 }
 
+func validateIdentifier(id, fieldName string) error {
+	trimmed := strings.TrimSpace(id)
+	if trimmed == "" || len(trimmed) > 128 {
+		return errors.New("seatling: " + fieldName + " must be 1-128 characters")
+	}
+	hasAlphanumeric := false
+	for _, r := range trimmed {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			hasAlphanumeric = true
+			break
+		}
+	}
+	if !hasAlphanumeric {
+		return errors.New("seatling: " + fieldName + " must contain at least one alphanumeric character")
+	}
+	return nil
+}
+
 // New creates and configures a new SeatlingClient instance.
 func New(cfg Config) (*Client, error) {
-	if cfg.WorkspaceID == "" {
-		return nil, errors.New("seatling: workspace_id must not be empty")
+	if err := validateIdentifier(cfg.WorkspaceID, "workspace_id"); err != nil {
+		return nil, err
 	}
-	if cfg.ProductID == "" {
-		return nil, errors.New("seatling: product_id must not be empty")
+	if err := validateIdentifier(cfg.ProductID, "product_id"); err != nil {
+		return nil, err
 	}
 	if len(cfg.PublicKeys) == 0 {
 		return nil, errors.New("seatling: public_keys must contain at least one authoritative signing key (kid -> base64/base64url)")
@@ -363,6 +381,54 @@ func (c *Client) Activate(licenseKey string) (bool, error) {
 	return bool(C.seatling_client_activate(ptr, cLicenseKey)), nil
 }
 
+// ActivateDetailed performs an online activation returning rich server diagnostics, status codes, and portal URLs.
+func (c *Client) ActivateDetailed(licenseKey string) (ActivationResult, error) {
+	if hasNul(licenseKey) {
+		return ActivationResult{
+			Success: false,
+			Status:  StatusInvalidConfiguration,
+			Message: "seatling: license_key must not contain NUL bytes",
+		}, errors.New("seatling: license_key must not contain NUL bytes")
+	}
+	ptr, ok := c.acquire()
+	if !ok {
+		return ActivationResult{
+			Success: false,
+			Status:  StatusNotActivated,
+			Message: "seatling: client is closed",
+		}, ErrClientClosed
+	}
+	defer c.release()
+
+	cLicenseKey := C.CString(licenseKey)
+	defer C.free(unsafe.Pointer(cLicenseKey))
+
+	var cResult C.seatling_activation_result_t
+	C.seatling_client_activate_detailed(ptr, cLicenseKey, &cResult)
+	defer C.seatling_activation_result_free(&cResult)
+
+	res := ActivationResult{
+		Success:     bool(cResult.success),
+		Status:      StatusCode(cResult.status),
+		SeatsActive: int32(cResult.seats_active),
+		SeatLimit:   int32(cResult.seat_limit),
+	}
+	if cResult.message != nil {
+		res.Message = C.GoString(cResult.message)
+	}
+	if cResult.seat_id != nil {
+		res.SeatID = C.GoString(cResult.seat_id)
+	}
+	if cResult.portal_url != nil {
+		res.PortalURL = C.GoString(cResult.portal_url)
+	}
+	if cResult.buyer_email != nil {
+		res.BuyerEmail = C.GoString(cResult.buyer_email)
+	}
+
+	return res, nil
+}
+
 // HeartbeatNow manually triggers an immediate background heartbeat refresh.
 func (c *Client) HeartbeatNow() (StatusCode, error) {
 	ptr, ok := c.acquire()
@@ -374,14 +440,21 @@ func (c *Client) HeartbeatNow() (StatusCode, error) {
 	return status, nil
 }
 
-// Deactivate releases the seat allocation associated with this client instance.
+// Deactivate releases the seat allocation associated with this client instance on the server.
+// If the server is unreachable, it defaults to forcing local lease teardown.
 func (c *Client) Deactivate() (bool, error) {
+	return c.DeactivateWithTimeout(8*time.Second, true)
+}
+
+// DeactivateWithTimeout releases the seat allocation with an explicit network timeout and force policy.
+func (c *Client) DeactivateWithTimeout(timeout time.Duration, force bool) (bool, error) {
 	ptr, ok := c.acquire()
 	if !ok {
 		return false, ErrClientClosed
 	}
 	defer c.release()
-	return bool(C.seatling_client_deactivate(ptr)), nil
+	timeoutMs := clampTimeoutMs(timeout)
+	return bool(C.seatling_client_deactivate_detailed(ptr, timeoutMs, C.bool(force))), nil
 }
 
 // Close frees native memory and halts any active background workers.

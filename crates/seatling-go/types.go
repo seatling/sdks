@@ -91,3 +91,15 @@ type HWIDComponents struct {
 	Disk   string
 	OSUUID string
 }
+
+// ActivationResult provides full diagnostics and server response claims from an activation attempt.
+type ActivationResult struct {
+	Success     bool
+	Status      StatusCode
+	Message     string
+	SeatID      string
+	PortalURL   string
+	BuyerEmail  string
+	SeatsActive int32
+	SeatLimit   int32
+}

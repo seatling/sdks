@@ -103,8 +103,84 @@ fn validate_api_base_url(raw: &str) -> Result<String, SeatlingError> {
     Ok(trimmed.to_string())
 }
 
+fn validate_identifier(id: &str, field_name: &str) -> Result<(), SeatlingError> {
+    let trimmed = id.trim();
+    if trimmed.is_empty()
+        || trimmed.len() > 128
+        || !trimmed.chars().any(|c| c.is_ascii_alphanumeric())
+    {
+        return Err(SeatlingError::new(
+            StatusCode::InvalidConfiguration,
+            format!(
+                "Invalid {}: must be 1-128 characters and contain at least one alphanumeric character",
+                field_name
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn parse_problem_details(json: &serde_json::Value, fallback_message: &str) -> (String, String) {
+    let problem_type = json["type"]
+        .as_str()
+        .unwrap_or_default()
+        .trim_end_matches('/')
+        .to_string();
+
+    let extract_fallback = |json: &serde_json::Value| -> String {
+        json["detail"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                json["title"]
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+            })
+            .unwrap_or(fallback_message)
+            .to_string()
+    };
+
+    let message = if let Some(errs) = json["errors"].as_array() {
+        if let Some(first_err) = errs.first() {
+            let detail = first_err["detail"].as_str().unwrap_or("").trim();
+            let pointer = first_err["pointer"].as_str().unwrap_or("").trim();
+            if !pointer.is_empty() && !detail.is_empty() {
+                format!("{}: {}", pointer, detail)
+            } else if !detail.is_empty() {
+                detail.to_string()
+            } else {
+                extract_fallback(json)
+            }
+        } else {
+            extract_fallback(json)
+        }
+    } else {
+        extract_fallback(json)
+    };
+
+    (problem_type, message)
+}
+
 impl SeatlingClient {
     pub fn new(mut config: SeatlingConfig) -> Result<Self, SeatlingError> {
+        validate_identifier(&config.workspace_id, "workspace_id")?;
+        validate_identifier(&config.product_id, "product_id")?;
+
+        if config.public_keys.is_empty() {
+            return Err(SeatlingError::new(
+                StatusCode::TamperOrSignatureInvalid,
+                "At least one public key must be provided in public_keys".to_string(),
+            ));
+        }
+        if config.public_keys.len() > 64 {
+            return Err(SeatlingError::new(
+                StatusCode::InvalidConfiguration,
+                "public_keys exceeds maximum allowed key count (64)".to_string(),
+            ));
+        }
+
         if !validate_semver(&config.app_version) {
             return Err(SeatlingError::new(
                 StatusCode::InvalidConfiguration,
@@ -429,6 +505,7 @@ impl SeatlingClient {
                     || ack_claims.sub != claims.sub
                     || ack_claims.seat_id != claims.seat_id
                     || ack_claims.exp < ack_claims.iat
+                    || ack_claims.iat > now_utc.saturating_add(300)
                 {
                     return (
                         LeaseSnapshot {
@@ -661,6 +738,7 @@ impl SeatlingClient {
         let resp = ureq::post(&url)
             .config()
             .timeout_global(Some(timeout))
+            .max_redirects(0)
             .http_status_as_error(false)
             .build()
             .send_json(body);
@@ -669,7 +747,12 @@ impl SeatlingClient {
             Ok(mut response) => {
                 let status_code = response.status().as_u16();
                 if response.status().is_success() {
-                    let data: serde_json::Value = match response.body_mut().read_json() {
+                    let data: serde_json::Value = match response
+                        .body_mut()
+                        .with_config()
+                        .limit(64 * 1024)
+                        .read_json()
+                    {
                         Ok(j) => j,
                         Err(e) => {
                             return ActivationResult {
@@ -779,21 +862,26 @@ impl SeatlingClient {
                         token: Some(license_token.to_string()),
                     }
                 } else {
-                    let json: serde_json::Value =
-                        response.body_mut().read_json().unwrap_or_default();
-                    let code_str = json["code"].as_str().unwrap_or_default();
-                    let msg = json["message"]
-                        .as_str()
-                        .unwrap_or("Activation rejected")
-                        .to_string();
+                    let json: serde_json::Value = response
+                        .body_mut()
+                        .with_config()
+                        .limit(64 * 1024)
+                        .read_json()
+                        .unwrap_or_default();
+                    let (problem_type, msg) = parse_problem_details(&json, "Activation rejected");
                     let portal_url = json["portal_url"].as_str().map(|s| s.to_string());
                     let buyer_email = json["buyer_email"].as_str().map(|s| s.to_string());
 
                     let status = if status_code == 403 {
-                        if code_str == "VERSION_NOT_ENTITLED" {
+                        if problem_type.ends_with("version-not-entitled") {
                             StatusCode::VersionCeilingExceeded
-                        } else if code_str == "KEY_REVOKED_UPDATE_REQUIRED" {
+                        } else if problem_type.ends_with("key-revoked") {
                             StatusCode::KeyRevokedUpdateRequired
+                        } else if problem_type.ends_with("license-suspended")
+                            || problem_type.ends_with("suspended")
+                            || problem_type.ends_with("revoked")
+                        {
+                            StatusCode::LicenseSuspendedOrRevoked
                         } else {
                             StatusCode::SeatsExhausted
                         }
@@ -951,6 +1039,7 @@ impl SeatlingClient {
         let resp = ureq::post(&url)
             .config()
             .timeout_global(Some(timeout))
+            .max_redirects(0)
             .http_status_as_error(false)
             .build()
             .send_json(body);
@@ -959,17 +1048,22 @@ impl SeatlingClient {
             Ok(mut response) => {
                 let status_code = response.status().as_u16();
                 if response.status().is_success() {
-                    let data: serde_json::Value =
-                        response.body_mut().read_json().unwrap_or_default();
+                    let data: serde_json::Value = response
+                        .body_mut()
+                        .with_config()
+                        .limit(64 * 1024)
+                        .read_json()
+                        .unwrap_or_default();
                     let ack_token = data["token"].as_str().unwrap_or_default();
 
-                    if let Ok(ack) = verifier.verify_heartbeat_ack_token(
+                    if let Ok(ack) = verifier.verify_heartbeat_ack_token_at(
                         ack_token,
                         &nonce,
                         workspace_id,
                         product_id,
                         &claims.sub,
                         &claims.seat_id,
+                        now_utc,
                     ) {
                         if ack.status == "locked" {
                             let portal_url = data["portal_url"].as_str().map(|s| s.to_string());
@@ -1089,17 +1183,18 @@ impl SeatlingClient {
                     };
                     cache.update(snap);
                 } else if status_code == 403 {
-                    let json: serde_json::Value =
-                        response.body_mut().read_json().unwrap_or_default();
-                    let code_str = json["code"].as_str().unwrap_or_default();
+                    let json: serde_json::Value = response
+                        .body_mut()
+                        .with_config()
+                        .limit(64 * 1024)
+                        .read_json()
+                        .unwrap_or_default();
+                    let (problem_type, msg) =
+                        parse_problem_details(&json, "License forbidden or revoked");
                     let app_fp = Self::compute_app_fingerprint(app_version, supported_kids);
 
-                    if code_str == "VERSION_NOT_ENTITLED" {
+                    if problem_type.ends_with("version-not-entitled") {
                         let portal_url = json["portal_url"].as_str().map(|s| s.to_string());
-                        let msg = json["message"]
-                            .as_str()
-                            .unwrap_or("Version not entitled")
-                            .to_string();
 
                         keystore
                             .lock()
@@ -1123,12 +1218,8 @@ impl SeatlingClient {
                             entitlements: claims.entitlements,
                         };
                         cache.update(snap);
-                    } else if code_str == "KEY_REVOKED_UPDATE_REQUIRED" {
+                    } else if problem_type.ends_with("key-revoked") {
                         let portal_url = json["portal_url"].as_str().map(|s| s.to_string());
-                        let msg = json["message"]
-                            .as_str()
-                            .unwrap_or("Workspace key revoked. Application update required.")
-                            .to_string();
 
                         keystore
                             .lock()
@@ -1171,14 +1262,20 @@ impl SeatlingClient {
                             offline_expires_at_unix: None,
                             is_within_offline_grace: false,
                             portal_url: None,
-                            message: Some("License forbidden or revoked".to_string()),
+                            message: Some(msg),
                             entitlements: claims.entitlements,
                         };
                         cache.update(snap);
                     }
                 } else if status_code == 409 {
-                    let json: serde_json::Value =
-                        response.body_mut().read_json().unwrap_or_default();
+                    let json: serde_json::Value = response
+                        .body_mut()
+                        .with_config()
+                        .limit(64 * 1024)
+                        .read_json()
+                        .unwrap_or_default();
+                    let (_, msg) =
+                        parse_problem_details(&json, "Seat requires customer portal deactivation.");
                     let portal_url = json["portal_url"].as_str().map(|s| s.to_string());
                     keystore
                         .lock()
@@ -1198,7 +1295,7 @@ impl SeatlingClient {
                         offline_expires_at_unix: None,
                         is_within_offline_grace: false,
                         portal_url,
-                        message: Some("Seat requires customer portal deactivation.".to_string()),
+                        message: Some(msg),
                         entitlements: claims.entitlements,
                     };
                     cache.update(snap);
@@ -1213,14 +1310,94 @@ impl SeatlingClient {
     }
 
     pub fn deactivate(&self) -> Result<(), SeatlingError> {
+        self.deactivate_with_options(Duration::from_secs(8), true)
+    }
+
+    pub fn deactivate_with_options(
+        &self,
+        timeout: Duration,
+        force: bool,
+    ) -> Result<(), SeatlingError> {
         self.stop_heartbeat_worker();
+
+        let raw_token = self.storage.read_lease();
+        let now_unix = self.now_unix();
+
+        if let Some(ref t) = raw_token {
+            let claims_res = self.verifier.verify_license_token_at(
+                t,
+                &self.config.workspace_id,
+                &self.config.product_id,
+                now_unix,
+            );
+
+            if let Ok(claims) = claims_res {
+                let hwid = HWIDCollector::get_hwid();
+                let mut nonce_bytes = [0u8; 16];
+                rand::fill(&mut nonce_bytes);
+                let nonce = hex::encode(nonce_bytes);
+
+                let deact_jwt = {
+                    let ks = self.keystore.lock().unwrap_or_else(|e| e.into_inner());
+                    ks.sign_deactivation(&claims.sub, &claims.seat_id, &hwid, &nonce, now_unix)
+                };
+
+                let body = serde_json::json!({
+                    "token": deact_jwt,
+                });
+
+                let url = format!("{}/v1/licenses/deactivate", self.config.api_base_url);
+                let resp = ureq::post(&url)
+                    .config()
+                    .timeout_global(Some(timeout))
+                    .max_redirects(0)
+                    .http_status_as_error(false)
+                    .build()
+                    .send_json(body);
+
+                match resp {
+                    Ok(mut response) => {
+                        let status_code = response.status().as_u16();
+                        // 200 OK or 404 Not Found (seat already freed / absent on server)
+                        if response.status().is_success() || status_code == 404 {
+                            self.teardown_local_lease();
+                            return Ok(());
+                        } else if !force {
+                            let json: serde_json::Value = response
+                                .body_mut()
+                                .with_config()
+                                .limit(64 * 1024)
+                                .read_json()
+                                .unwrap_or_default();
+                            let default_msg =
+                                format!("Server rejected deactivation with HTTP {}", status_code);
+                            let (_, msg) = parse_problem_details(&json, &default_msg);
+                            return Err(SeatlingError::new(StatusCode::NetworkError, msg));
+                        }
+                    }
+                    Err(e) => {
+                        if !force {
+                            return Err(SeatlingError::new(
+                                StatusCode::NetworkError,
+                                format!("Network error during deactivation: {}", e),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        self.teardown_local_lease();
+        Ok(())
+    }
+
+    fn teardown_local_lease(&self) {
         self.keystore
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .rotate_keypair(&self.storage);
         self.storage.delete_lease();
         self.cache.clear();
-        Ok(())
     }
 
     pub fn shutdown(&self) {
@@ -1389,66 +1566,169 @@ impl SeatlingClient {
                                 if let Ok(pop_jwt) = pop_jwt_res {
                                     let body = serde_json::json!({ "token": pop_jwt });
                                     let url = format!("{}/v1/licenses/activate", api_url);
-                                    if let Ok(mut resp) = ureq::post(&url)
+                                    let resp = ureq::post(&url)
                                         .config()
                                         .timeout_global(Some(Duration::from_secs(10)))
+                                        .max_redirects(0)
+                                        .http_status_as_error(false)
                                         .build()
-                                        .send_json(body)
-                                    {
-                                        if let Ok(data) =
-                                            resp.body_mut().read_json::<serde_json::Value>()
-                                        {
-                                            if let Some(tok) = data["token"].as_str() {
-                                                if let Ok(new_claims) = verifier
-                                                    .verify_license_token_bound_at(
-                                                        tok,
-                                                        &ws_id,
-                                                        &prod_id,
-                                                        &current_hwid,
-                                                        &device_vk,
-                                                        now,
-                                                    )
-                                                {
-                                                    let _ = storage.write_lease(tok);
-                                                    storage.delete_ack();
-                                                    let grace = new_claims
-                                                        .exp
-                                                        .saturating_sub(new_claims.iat)
-                                                        .max(0);
-                                                    keystore
-                                                        .lock()
-                                                        .unwrap_or_else(|e| e.into_inner())
-                                                        .mutate(&storage, |rec| {
-                                                            rec.last_validated_at_utc =
-                                                                new_claims.iat;
-                                                            rec.high_water_mark_utc = rec
-                                                                .high_water_mark_utc
-                                                                .max(new_claims.iat);
-                                                            rec.grace_duration_seconds = grace;
-                                                            rec.revocation_status = 0;
-                                                            rec.ack_state_tag = 0;
-                                                            rec.revocation_context = [0u8; 8];
-                                                        });
-                                                    let snap = LeaseSnapshot {
-                                                        status: StatusCode::Ok,
-                                                        is_authorized: true,
-                                                        seat_id: Some(new_claims.seat_id),
-                                                        masked_key: new_claims
-                                                            .masked_key
-                                                            .or(Some(new_claims.sub)),
-                                                        buyer_email: new_claims.buyer_email,
-                                                        last_verified_at_unix: Some(new_claims.iat),
-                                                        offline_expires_at_unix: Some(
-                                                            new_claims.iat.saturating_add(grace),
-                                                        ),
-                                                        is_within_offline_grace: true,
-                                                        portal_url: None,
-                                                        message: None,
-                                                        entitlements: new_claims.entitlements,
-                                                    };
-                                                    cache.update(snap);
+                                        .send_json(body);
+                                    if let Ok(mut response) = resp {
+                                        let status_code = response.status().as_u16();
+                                        if response.status().is_success() {
+                                            if let Ok(data) = response
+                                                .body_mut()
+                                                .with_config()
+                                                .limit(64 * 1024)
+                                                .read_json::<serde_json::Value>()
+                                            {
+                                                if let Some(tok) = data["token"].as_str() {
+                                                    if let Ok(new_claims) = verifier
+                                                        .verify_license_token_bound_at(
+                                                            tok,
+                                                            &ws_id,
+                                                            &prod_id,
+                                                            &current_hwid,
+                                                            &device_vk,
+                                                            now,
+                                                        )
+                                                    {
+                                                        let _ = storage.write_lease(tok);
+                                                        storage.delete_ack();
+                                                        let grace = new_claims
+                                                            .exp
+                                                            .saturating_sub(new_claims.iat)
+                                                            .max(0);
+                                                        keystore
+                                                            .lock()
+                                                            .unwrap_or_else(|e| e.into_inner())
+                                                            .mutate(&storage, |rec| {
+                                                                rec.last_validated_at_utc =
+                                                                    new_claims.iat;
+                                                                rec.high_water_mark_utc = rec
+                                                                    .high_water_mark_utc
+                                                                    .max(new_claims.iat);
+                                                                rec.grace_duration_seconds = grace;
+                                                                rec.revocation_status = 0;
+                                                                rec.ack_state_tag = 0;
+                                                                rec.revocation_context = [0u8; 8];
+                                                            });
+                                                        let snap = LeaseSnapshot {
+                                                            status: StatusCode::Ok,
+                                                            is_authorized: true,
+                                                            seat_id: Some(new_claims.seat_id),
+                                                            masked_key: new_claims
+                                                                .masked_key
+                                                                .or(Some(new_claims.sub)),
+                                                            buyer_email: new_claims.buyer_email,
+                                                            last_verified_at_unix: Some(
+                                                                new_claims.iat,
+                                                            ),
+                                                            offline_expires_at_unix: Some(
+                                                                new_claims
+                                                                    .iat
+                                                                    .saturating_add(grace),
+                                                            ),
+                                                            is_within_offline_grace: true,
+                                                            portal_url: None,
+                                                            message: None,
+                                                            entitlements: new_claims.entitlements,
+                                                        };
+                                                        cache.update(snap);
+                                                    }
                                                 }
                                             }
+                                        } else if status_code == 403 {
+                                            let json: serde_json::Value = response
+                                                .body_mut()
+                                                .with_config()
+                                                .limit(64 * 1024)
+                                                .read_json()
+                                                .unwrap_or_default();
+                                            let (problem_type, msg) = parse_problem_details(
+                                                &json,
+                                                "License forbidden or revoked",
+                                            );
+                                            let app_fp = Self::compute_app_fingerprint(
+                                                &app_version,
+                                                &supported_kids,
+                                            );
+                                            let (persisted_code, rev_context) = if problem_type
+                                                .ends_with("version-not-entitled")
+                                            {
+                                                (StatusCode::VersionCeilingExceeded, app_fp)
+                                            } else if problem_type.ends_with("key-revoked") {
+                                                (StatusCode::KeyRevokedUpdateRequired, app_fp)
+                                            } else if problem_type.ends_with("seats-exhausted") {
+                                                (StatusCode::SeatsExhausted, [0u8; 8])
+                                            } else {
+                                                (StatusCode::LicenseSuspendedOrRevoked, [0u8; 8])
+                                            };
+                                            keystore
+                                                .lock()
+                                                .unwrap_or_else(|e| e.into_inner())
+                                                .mutate(&storage, |rec| {
+                                                    rec.revocation_status = persisted_code as u32;
+                                                    rec.revocation_context = rev_context;
+                                                });
+                                            let snap = LeaseSnapshot {
+                                                status: persisted_code,
+                                                is_authorized: false,
+                                                seat_id: Some(claims.seat_id.clone()),
+                                                masked_key: claims
+                                                    .masked_key
+                                                    .clone()
+                                                    .or_else(|| Some(claims.sub.clone())),
+                                                buyer_email: claims.buyer_email.clone(),
+                                                last_verified_at_unix: Some(claims.iat),
+                                                offline_expires_at_unix: None,
+                                                is_within_offline_grace: false,
+                                                portal_url: json["portal_url"]
+                                                    .as_str()
+                                                    .map(|s| s.to_string()),
+                                                message: Some(msg),
+                                                entitlements: claims.entitlements.clone(),
+                                            };
+                                            cache.update(snap);
+                                        } else if status_code == 409 {
+                                            let json: serde_json::Value = response
+                                                .body_mut()
+                                                .with_config()
+                                                .limit(64 * 1024)
+                                                .read_json()
+                                                .unwrap_or_default();
+                                            let (_, msg) = parse_problem_details(
+                                                &json,
+                                                "Seat requires customer portal deactivation.",
+                                            );
+                                            keystore
+                                                .lock()
+                                                .unwrap_or_else(|e| e.into_inner())
+                                                .mutate(&storage, |rec| {
+                                                    rec.revocation_status =
+                                                        StatusCode::RequiresPortalDeactivation
+                                                            as u32;
+                                                    rec.revocation_context = [0u8; 8];
+                                                });
+                                            let snap = LeaseSnapshot {
+                                                status: StatusCode::RequiresPortalDeactivation,
+                                                is_authorized: false,
+                                                seat_id: Some(claims.seat_id.clone()),
+                                                masked_key: claims
+                                                    .masked_key
+                                                    .clone()
+                                                    .or_else(|| Some(claims.sub.clone())),
+                                                buyer_email: claims.buyer_email.clone(),
+                                                last_verified_at_unix: Some(claims.iat),
+                                                offline_expires_at_unix: None,
+                                                is_within_offline_grace: false,
+                                                portal_url: json["portal_url"]
+                                                    .as_str()
+                                                    .map(|s| s.to_string()),
+                                                message: Some(msg),
+                                                entitlements: claims.entitlements.clone(),
+                                            };
+                                            cache.update(snap);
                                         }
                                     }
                                 }

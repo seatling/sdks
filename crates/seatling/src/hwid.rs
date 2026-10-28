@@ -58,18 +58,26 @@ impl HWIDCollector {
     pub const WEIGHT_OS_UUID: u32 = 20;
     pub const QUORUM_PASSING_SCORE: u32 = 70;
 
+    pub fn is_unavailable_component(val: &str) -> bool {
+        val == "1e075079a4055273ca35d46bb12cc436151c890100a0669d2aaebcfc47743d52" // cpu
+            || val == "816766468a35607ae8dbb46091db857022066fa21df996452243763f350c37cb" // mobo
+            || val == "eb154aa1b3c95944ae68f711e7c9966133d1b72a6bca2321591fcf3b85fae9c0" // disk
+            || val == "da04f58ba9b0a7cbe5f23bdfbc71a8eaae13735c02931d86f78a2eefeb9fa5f8"
+        // os_uuid
+    }
+
     pub fn weighted_score(a: &HWIDComponents, b: &HWIDComponents) -> u32 {
         let mut score = 0;
-        if a.mobo == b.mobo {
+        if a.mobo == b.mobo && !Self::is_unavailable_component(&a.mobo) {
             score += Self::WEIGHT_MOBO;
         }
-        if a.cpu == b.cpu {
+        if a.cpu == b.cpu && !Self::is_unavailable_component(&a.cpu) {
             score += Self::WEIGHT_CPU;
         }
-        if a.disk == b.disk {
+        if a.disk == b.disk && !Self::is_unavailable_component(&a.disk) {
             score += Self::WEIGHT_DISK;
         }
-        if a.os_uuid == b.os_uuid {
+        if a.os_uuid == b.os_uuid && !Self::is_unavailable_component(&a.os_uuid) {
             score += Self::WEIGHT_OS_UUID;
         }
         score

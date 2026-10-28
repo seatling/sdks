@@ -232,6 +232,32 @@ impl TokenVerifier {
         expected_sub: &str,
         expected_seat_id: &str,
     ) -> Result<HeartbeatAckClaims, (StatusCode, String)> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        self.verify_heartbeat_ack_token_at(
+            token_str,
+            expected_nonce,
+            expected_workspace_id,
+            expected_product_id,
+            expected_sub,
+            expected_seat_id,
+            now,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn verify_heartbeat_ack_token_at(
+        &self,
+        token_str: &str,
+        expected_nonce: &str,
+        expected_workspace_id: &str,
+        expected_product_id: &str,
+        expected_sub: &str,
+        expected_seat_id: &str,
+        now_unix: i64,
+    ) -> Result<HeartbeatAckClaims, (StatusCode, String)> {
         let (header, claims) =
             decode_and_verify_jwt::<HeartbeatAckClaims, _>(token_str, |h| self.resolve_key(h))
                 .map_err(|e| (StatusCode::TamperOrSignatureInvalid, e))?;
@@ -284,6 +310,20 @@ impl TokenVerifier {
             return Err((
                 StatusCode::TamperOrSignatureInvalid,
                 "Heartbeat ack expiration precedes issued_at".to_string(),
+            ));
+        }
+
+        if claims.iat > now_unix.saturating_add(300) {
+            return Err((
+                StatusCode::TamperOrSignatureInvalid,
+                "Heartbeat ack issued in future (iat exceeds clock skew tolerance)".to_string(),
+            ));
+        }
+
+        if now_unix > claims.exp {
+            return Err((
+                StatusCode::TamperOrSignatureInvalid,
+                "Heartbeat ack token expired".to_string(),
             ));
         }
 

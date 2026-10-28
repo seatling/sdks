@@ -375,4 +375,29 @@ describe('SeatlingClient End-to-End', () => {
 
     client.shutdown();
   });
+
+  test('TokenVerifier verifies license token with strict HWID and device key binding', () => {
+    const { TokenVerifier } = require('../src/verifier');
+    const verifier = new TokenVerifier({
+      demo_key_2026: workspacePublicKeyBase64,
+    });
+    const devKey = getDevicePublicKey();
+    const hwid = HWIDCollector.getHWID();
+    const validJwt = createSignedLicenseJwt({});
+
+    // Valid bound check
+    const res = verifier.verifyLicenseTokenBound(validJwt, 'ws_demo', 'prod_synth', hwid, devKey);
+    assert.strictEqual(res.valid, true);
+    assert.ok(res.claims);
+
+    // Mismatched HWID
+    const resWrongHwid = verifier.verifyLicenseTokenBound(validJwt, 'ws_demo', 'prod_synth', 'wrong_hwid', devKey);
+    assert.strictEqual(resWrongHwid.valid, false);
+
+    // Mismatched device key
+    const otherStorage = new StorageManager('ws_other', 'prod_other', path.join(tmpDir, 'other'));
+    const otherDevKey = new HardwareSealedKeystore(otherStorage).getPublicKeyBase64();
+    const resWrongDevKey = verifier.verifyLicenseTokenBound(validJwt, 'ws_demo', 'prod_synth', hwid, otherDevKey);
+    assert.strictEqual(resWrongDevKey.valid, false);
+  });
 });

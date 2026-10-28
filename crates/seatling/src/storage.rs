@@ -81,6 +81,30 @@ impl StorageManager {
         self.dir_path.join(".keystore.secret")
     }
 
+    pub fn secret_anchor_prev_path(&self) -> PathBuf {
+        self.dir_path.join(".keystore.secret.prev")
+    }
+
+    pub fn backup_secret_anchor(&self) {
+        let curr = self.secret_anchor_path();
+        let prev = self.secret_anchor_prev_path();
+        if curr.exists() {
+            let _ = fs::rename(&curr, &prev);
+        }
+    }
+
+    pub fn cleanup_secret_anchor_backup(&self) {
+        let _ = fs::remove_file(self.secret_anchor_prev_path());
+    }
+
+    pub fn restore_secret_anchor_backup(&self) {
+        let prev = self.secret_anchor_prev_path();
+        let curr = self.secret_anchor_path();
+        if prev.exists() {
+            let _ = fs::rename(prev, curr);
+        }
+    }
+
     pub fn lease_path(&self) -> PathBuf {
         self.dir_path.join("lease.seatling")
     }
@@ -99,6 +123,18 @@ impl StorageManager {
 
     pub fn read_secret_anchor(&self) -> Option<[u8; 32]> {
         let path = self.secret_anchor_path();
+        let meta = fs::symlink_metadata(&path).ok()?;
+        if !meta.file_type().is_file() || meta.len() != 32 {
+            return None;
+        }
+        let mut file = fs::File::open(&path).ok()?;
+        let mut out = [0u8; 32];
+        file.read_exact(&mut out).ok()?;
+        Some(out)
+    }
+
+    pub fn read_secret_anchor_prev(&self) -> Option<[u8; 32]> {
+        let path = self.secret_anchor_prev_path();
         let meta = fs::symlink_metadata(&path).ok()?;
         if !meta.file_type().is_file() || meta.len() != 32 {
             return None;
@@ -208,8 +244,13 @@ impl StorageManager {
                     .join("Seatling")
                     .join(workspace_id)
                     .join(product_id)
+            } else if let Ok(prog_data) = std::env::var("ProgramData") {
+                PathBuf::from(prog_data)
+                    .join("Seatling")
+                    .join(workspace_id)
+                    .join(product_id)
             } else {
-                PathBuf::from(".seatling")
+                PathBuf::from("C:\\ProgramData\\Seatling")
                     .join(workspace_id)
                     .join(product_id)
             }
@@ -225,7 +266,7 @@ impl StorageManager {
                     .join(workspace_id)
                     .join(product_id)
             } else {
-                PathBuf::from(".seatling")
+                PathBuf::from("/Library/Application Support/Seatling")
                     .join(workspace_id)
                     .join(product_id)
             }
@@ -246,7 +287,7 @@ impl StorageManager {
                     .join(workspace_id)
                     .join(product_id)
             } else {
-                PathBuf::from(".seatling")
+                PathBuf::from("/var/lib/seatling")
                     .join(workspace_id)
                     .join(product_id)
             }

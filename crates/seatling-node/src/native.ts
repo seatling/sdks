@@ -60,7 +60,7 @@ export interface NativeSeatlingClient {
   activate(licenseKey: string): NativeActivationResult;
   heartbeatNow(): NativeLeaseStatus;
   heartbeatWithTimeout(timeoutMs?: number): NativeLeaseStatus;
-  deactivate(): boolean;
+  deactivate(timeoutMs?: number, force?: boolean): boolean;
   shutdown(): void;
 }
 
@@ -77,6 +77,7 @@ export interface NativeStorageManager {
 
 export interface NativeHardwareSealedKeystore {
   getPublicKeyBase64(): string;
+  getAttestationTier(): string;
   signActivationPopJwt(key: string, hwid: string, hwidComponents: NativeHWIDComponents, appVersion: string, aud: string, timestamp: number, nonce: string, supportedKids?: string[]): string;
   signHeartbeatChallengeJwt(key: string, seatId: string, hwid: string, sessionId: string, appVersion: string, aud: string, timestamp: number, nonce: string, supportedKids?: string[]): string;
   signActivationProof(key: string, hwid: string, timestamp: number, supportedKids?: string[]): string;
@@ -86,6 +87,13 @@ export interface NativeHardwareSealedKeystore {
 
 export interface NativeTokenVerifier {
   verifyLicenseToken(token: string, expectedWorkspaceId: string, expectedProductId: string): string;
+  verifyLicenseTokenBound(
+    token: string,
+    expectedWorkspaceId: string,
+    expectedProductId: string,
+    expectedHwid: string,
+    expectedDevicePubkeyBase64: string
+  ): string;
 }
 
 export interface NativeStateAndEntitlementCache {
@@ -114,7 +122,6 @@ function loadNative(): NativeBindings {
     path.join(__dirname, '..', '..', 'seatling.node'),
     path.join(__dirname, '..', 'seatling.node'),
     path.join(__dirname, 'seatling.node'),
-    path.join(process.cwd(), 'seatling.node'),
     path.join(__dirname, '..', '..', 'native', 'seatling.node'),
     path.join(__dirname, '..', 'native', 'seatling.node'),
   ];

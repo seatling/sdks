@@ -15,12 +15,14 @@ impl FileLock {
         let start = Instant::now();
 
         loop {
-            let file = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(false)
-                .open(&lock_path)?;
+            let mut opts = OpenOptions::new();
+            opts.read(true).write(true).create(true).truncate(false);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                opts.mode(0o600);
+            }
+            let file = opts.open(&lock_path)?;
 
             #[cfg(target_os = "windows")]
             {

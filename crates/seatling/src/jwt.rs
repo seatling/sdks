@@ -1,8 +1,10 @@
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+
+pub const MAX_JWT_LEN: usize = 32 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JwtHeader {
@@ -47,7 +49,11 @@ pub fn decode_and_verify_jwt<T: DeserializeOwned, F>(
 where
     F: FnOnce(&JwtHeader) -> Result<VerifyingKey, String>,
 {
-    let parts: Vec<&str> = token.trim().split('.').collect();
+    let trimmed = token.trim();
+    if trimmed.is_empty() || trimmed.len() > MAX_JWT_LEN {
+        return Err("Invalid JWT length".to_string());
+    }
+    let parts: Vec<&str> = trimmed.split('.').collect();
     if parts.len() != 3 {
         return Err("Invalid JWT format: expected 3 parts".to_string());
     }
@@ -65,12 +71,6 @@ where
         ));
     }
 
-    let claims_bytes = URL_SAFE_NO_PAD
-        .decode(parts[1])
-        .map_err(|e| format!("Invalid base64url claims: {}", e))?;
-    let claims: T =
-        serde_json::from_slice(&claims_bytes).map_err(|e| format!("Invalid claims JSON: {}", e))?;
-
     let sig_bytes = URL_SAFE_NO_PAD
         .decode(parts[2])
         .map_err(|e| format!("Invalid base64url signature: {}", e))?;
@@ -86,8 +86,14 @@ where
 
     let signing_input = format!("{}.{}", parts[0], parts[1]);
     verifying_key
-        .verify(signing_input.as_bytes(), &signature)
+        .verify_strict(signing_input.as_bytes(), &signature)
         .map_err(|e| format!("EdDSA signature verification failed: {}", e))?;
+
+    let claims_bytes = URL_SAFE_NO_PAD
+        .decode(parts[1])
+        .map_err(|e| format!("Invalid base64url claims: {}", e))?;
+    let claims: T =
+        serde_json::from_slice(&claims_bytes).map_err(|e| format!("Invalid claims JSON: {}", e))?;
 
     Ok((header, claims))
 }

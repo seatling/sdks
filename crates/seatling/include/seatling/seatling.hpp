@@ -198,9 +198,9 @@ public:
         return static_cast<StatusCode>(::seatling_client_heartbeat_now(m_handle));
     }
 
-    bool deactivate() {
+    bool deactivate(uint32_t timeout_ms = 8000, bool force = true) {
         if (!m_handle) return false;
-        return ::seatling_client_deactivate(m_handle);
+        return ::seatling_client_deactivate_detailed(m_handle, timeout_ms, force);
     }
 
     static std::string get_hwid() {

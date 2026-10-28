@@ -64,8 +64,6 @@ mod iokit {
 pub fn collect_macos() -> PlatformIdentifiers {
     #[cfg(target_os = "macos")]
     {
-        use std::process::Command;
-
         let platform_uuid = iokit::get_iokit_property("IOPlatformUUID").and_then(|s| normalize(&s));
         let platform_serial =
             iokit::get_iokit_property("IOPlatformSerialNumber").and_then(|s| normalize(&s));
@@ -103,18 +101,14 @@ pub fn collect_macos() -> PlatformIdentifiers {
             cpu = normalize(std::env::consts::ARCH);
         }
 
-        // Disk volume UUID using absolute binary path
+        // Disk volume identification using statfs (zero-prompt, no child subprocesses)
         let mut disk = None;
-        if let Ok(output) = Command::new("/usr/sbin/diskutil")
-            .args(["info", "/"])
-            .output()
-        {
-            let text = String::from_utf8_lossy(&output.stdout);
-            if let Some(pos) = text.find("Volume UUID:") {
-                let start = pos + 12;
-                if let Some(end) = text[start..].find('\n') {
-                    disk = normalize(text[start..start + end].trim());
-                }
+        unsafe {
+            let mut stat: libc::statfs = std::mem::zeroed();
+            let root_path = b"/\0";
+            if libc::statfs(root_path.as_ptr() as *const _, &mut stat) == 0 {
+                let fsid_str = format!("{:08x}:{:08x}", stat.f_fsid.val[0], stat.f_fsid.val[1]);
+                disk = normalize(&fsid_str);
             }
         }
 

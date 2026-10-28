@@ -191,6 +191,17 @@ pub struct HeartbeatAckClaims {
     pub entitlements: HashMap<String, serde_json::Value>,
 }
 
+// V7 JWT Claims: Client Deactivation (typ: "seatling-deactivate+jwt")
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeactivationClaims {
+    pub iss: String, // Base64 device public key
+    pub sub: String, // License key
+    pub seat_id: String,
+    pub hwid: String,
+    pub iat: i64,
+    pub jti: String, // Nonce CSPRNG
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredKeystoreFile {
     pub version: u32,

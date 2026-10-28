@@ -975,9 +975,11 @@ dependencies = [
 name = "seatling-node"
 version = "1.1.0"
 dependencies = [
+ "hex",
  "napi",
  "napi-build",
  "napi-derive",
+ "rand",
  "seatling",
  "serde_json",
 ]

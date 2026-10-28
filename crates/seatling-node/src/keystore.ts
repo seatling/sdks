@@ -18,7 +18,7 @@ export class HardwareSealedKeystore {
   }
 
   public getAttestationTier(): AttestationTier {
-    return 'hardware_sealed';
+    return this.inner.getAttestationTier() as AttestationTier;
   }
 
   public signActivationPopJwt(

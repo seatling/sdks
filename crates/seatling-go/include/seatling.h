@@ -60,9 +60,31 @@ size_t seatling_client_get_session_id(const SeatlingClient* client, char* buffer
 bool seatling_client_get_entitlement_bool(const SeatlingClient* client, const char* key, bool default_value);
 int64_t seatling_client_get_entitlement_i64(const SeatlingClient* client, const char* key, int64_t default_value);
 double seatling_client_get_entitlement_f64(const SeatlingClient* client, const char* key, double default_value);
+typedef struct seatling_activation_result_t {
+    bool success;
+    seatling_status_code_t status;
+    const char* message;
+    const char* seat_id;
+    const char* portal_url;
+    const char* buyer_email;
+    int32_t seats_active;
+    int32_t seat_limit;
+} seatling_activation_result_t;
+
 bool seatling_client_activate(SeatlingClient* client, const char* license_key);
+bool seatling_client_activate_detailed(
+    SeatlingClient* client,
+    const char* license_key,
+    seatling_activation_result_t* out_result
+);
+void seatling_activation_result_free(seatling_activation_result_t* result);
 seatling_status_code_t seatling_client_heartbeat_now(SeatlingClient* client);
 bool seatling_client_deactivate(SeatlingClient* client);
+bool seatling_client_deactivate_detailed(
+    SeatlingClient* client,
+    uint32_t timeout_ms,
+    bool force
+);
 void seatling_client_free(SeatlingClient* client);
 size_t seatling_hwid_get(char* buffer, size_t buffer_len);
 uint32_t seatling_hwid_weighted_score(

@@ -8,6 +8,7 @@ import { SeatlingClient } from '../src/client';
 import { HWIDCollector } from '../src/hwid';
 import { HardwareSealedKeystore } from '../src/keystore';
 import { StorageManager } from '../src/storage';
+import { StateAndEntitlementCache } from '../src/cache';
 import { LicenseJwtClaims } from '../src/types';
 
 const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
@@ -245,6 +246,46 @@ describe('SeatlingClient Edge Cases & Storage Resilience', () => {
     // Multiple shutdowns must not throw or deadlock
     client.shutdown();
     client.shutdown();
+    client.shutdown();
+  });
+
+  test('HWIDCollector.getComponents returns copy that resists in-place mutation', () => {
+    const c1 = HWIDCollector.getComponents();
+    const origCpu = c1.cpu;
+    c1.cpu = 'mutated_cpu';
+    const c2 = HWIDCollector.getComponents();
+    assert.strictEqual(c2.cpu, origCpu);
+    assert.notStrictEqual(c2.cpu, 'mutated_cpu');
+  });
+
+  test('StateAndEntitlementCache safely ignores prototype chain properties', () => {
+    const cache = new StateAndEntitlementCache();
+    // Inherited prototype properties should return the provided default value
+    const val = cache.getEntitlement('toString', 'default_val');
+    assert.strictEqual(val, 'default_val');
+    const valObj = cache.getEntitlement('valueOf', 'default_val');
+    assert.strictEqual(valObj, 'default_val');
+  });
+
+  test('HardwareSealedKeystore queries attestation tier dynamically', () => {
+    const storage = new StorageManager('ws_edge', 'prod_edge', tmpDir);
+    const ks = new HardwareSealedKeystore(storage);
+    const tier = ks.getAttestationTier();
+    assert.ok(tier === 'hardware_sealed' || tier === 'software');
+  });
+
+  test('SeatlingClient handles negative, NaN, and overlong timeout clamping safely', () => {
+    const client = new SeatlingClient({
+      workspaceId: 'ws_edge',
+      productId: 'prod_edge',
+      publicKeys: { ws_edge_key: workspacePublicKeyBase64 },
+      appVersion: '1.0.0',
+      storageDir: tmpDir,
+    });
+    // Should not throw or crash on non-standard timeout values
+    assert.strictEqual(client.isValidBlocking(-500), false);
+    assert.strictEqual(client.isValidBlocking(NaN), false);
+    assert.strictEqual(client.isValidBlocking(0xffffffffffff), false);
     client.shutdown();
   });
 });

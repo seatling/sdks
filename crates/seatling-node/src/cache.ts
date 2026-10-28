@@ -30,7 +30,10 @@ export class StateAndEntitlementCache {
   }
 
   public getEntitlement<T extends EntitlementValue>(key: string, defaultValue: T): T {
-    if (this.currentSnapshot.entitlements && key in this.currentSnapshot.entitlements) {
+    if (
+      this.currentSnapshot.entitlements &&
+      Object.prototype.hasOwnProperty.call(this.currentSnapshot.entitlements, key)
+    ) {
       const val = this.currentSnapshot.entitlements[key];
       if (typeof val === typeof defaultValue) {
         return val as T;

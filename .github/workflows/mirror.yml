@@ -1,0 +1,189 @@
+name: Mirror Go SDK to Dedicated Repository
+
+on:
+  workflow_call:
+    inputs:
+      tag_name:
+        description: "Release git tag name (e.g., v1.1.0)"
+        required: true
+        type: string
+      version:
+        description: "Semantic version string (optional, e.g., 1.1.0)"
+        required: false
+        type: string
+    secrets:
+      SEATLING_GO_DEPLOY_KEY:
+        required: true
+      SEATLING_GO_TOKEN:
+        required: true
+      GH_TOKEN:
+        required: true
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Release git tag name or branch to mirror (e.g., v1.1.0 or main)"
+        required: true
+        type: string
+        default: "main"
+      version:
+        description: "Semantic version string (optional, e.g., 1.1.0)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: mirror-${{ inputs.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  mirror-go-sdk:
+    name: Publish Go SDK to Dedicated Repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SEATLING_GO_DEPLOY_KEY: ${{ secrets.SEATLING_GO_DEPLOY_KEY }}
+      SEATLING_GO_TOKEN: ${{ secrets.SEATLING_GO_TOKEN }}
+      GH_TOKEN: ${{ secrets.SEATLING_GO_TOKEN || secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout Code at Tag or Branch
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag_name }}
+          fetch-depth: 1
+
+      - name: Setup Rust Toolchain (Fallback Compiler)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Assemble Go Release Package with Vendored Static Archives
+        shell: bash
+        env:
+          TAG_NAME: ${{ inputs.tag_name }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TARGET_REF="${TAG_NAME#refs/heads/}"
+
+          mkdir -p go-release/include
+          mkdir -p go-release/lib/windows_amd64
+          mkdir -p go-release/lib/darwin_arm64
+          mkdir -p go-release/lib/darwin_amd64
+          mkdir -p go-release/lib/linux_amd64
+          mkdir -p go-release/lib/linux_arm64
+
+          # Copy Go source files & header
+          cp -r crates/seatling-go/* go-release/
+          cp crates/seatling-go/LICENSE go-release/LICENSE
+          cp crates/seatling/include/seatling/seatling.h go-release/include/seatling.h
+
+          # Attempt to retrieve precompiled native release assets from GitHub Release (if not main branch)
+          mkdir -p release-assets
+          if [ "${TARGET_REF}" != "main" ]; then
+            echo "Checking for precompiled release archives on GitHub for '${TARGET_REF}'..."
+            if gh release download "${TARGET_REF}" --pattern "*.tar.gz" --dir release-assets 2>/dev/null; then
+              echo "Downloaded release assets for '${TARGET_REF}'."
+              for archive in release-assets/*.tar.gz; do
+                platform=$(basename "$archive" .tar.gz)
+                mkdir -p "native-artifacts/${platform}"
+                tar -xzf "$archive" -C "native-artifacts/${platform}"
+              done
+            fi
+          fi
+
+          if [ -f native-artifacts/seatling-linux-x64/lib/libseatling.a ]; then
+            echo "Copying downloaded precompiled static archives into go-release/lib/..."
+            cp native-artifacts/seatling-windows-x64-gnu/lib/libseatling.a go-release/lib/windows_amd64/libseatling.a
+            cp native-artifacts/seatling-macos-arm64/lib/libseatling.a go-release/lib/darwin_arm64/libseatling.a
+            cp native-artifacts/seatling-macos-x64/lib/libseatling.a go-release/lib/darwin_amd64/libseatling.a
+            cp native-artifacts/seatling-linux-x64/lib/libseatling.a go-release/lib/linux_amd64/libseatling.a
+            cp native-artifacts/seatling-linux-arm64/lib/libseatling.a go-release/lib/linux_arm64/libseatling.a
+          else
+            echo "Notice: Compiling staticlib locally for verification (${TARGET_REF})..."
+            cargo build --release -p seatling
+            cp target/release/libseatling.a go-release/lib/linux_amd64/libseatling.a
+            cp target/release/libseatling.a go-release/lib/windows_amd64/libseatling.a
+            cp target/release/libseatling.a go-release/lib/darwin_arm64/libseatling.a
+            cp target/release/libseatling.a go-release/lib/darwin_amd64/libseatling.a
+            cp target/release/libseatling.a go-release/lib/linux_arm64/libseatling.a
+          fi
+
+          # Strip debug symbols to keep module size compact
+          strip --strip-debug go-release/lib/linux_amd64/libseatling.a || true
+
+          # Verify package compiles with CGO on host runner
+          cd go-release
+          CGO_ENABLED=1 go vet ./...
+          CGO_ENABLED=1 go build ./...
+
+      - name: Push to Dedicated Go Repository (Branch or Release)
+        if: env.SEATLING_GO_DEPLOY_KEY != '' || env.SEATLING_GO_TOKEN != '' || env.GH_TOKEN != ''
+        shell: bash
+        env:
+          TAG_NAME: ${{ inputs.tag_name }}
+          VERSION: ${{ inputs.version }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TARGET_REF="${TAG_NAME#refs/heads/}"
+
+          if [ -z "$SEATLING_GO_DEPLOY_KEY" ] && [ -z "$SEATLING_GO_TOKEN" ] && [ -z "$GH_TOKEN" ]; then
+            echo "No deployment credentials configured (SEATLING_GO_DEPLOY_KEY, SEATLING_GO_TOKEN, or GH_TOKEN). Skipping push."
+            exit 0
+          fi
+
+          if [ -n "$SEATLING_GO_DEPLOY_KEY" ]; then
+            mkdir -p ~/.ssh
+            echo "$SEATLING_GO_DEPLOY_KEY" > ~/.ssh/id_rsa
+            chmod 600 ~/.ssh/id_rsa
+            ssh-keyscan github.com >> ~/.ssh/known_hosts
+            GIT_REMOTE="git@github.com:seatling/sdk-go.git"
+          else
+            GIT_REMOTE="https://x-access-token:${GH_TOKEN}@github.com/seatling/sdk-go.git"
+          fi
+
+          cd go-release
+          git init
+          git config user.name "seatling-bot[bot]"
+          git config user.email "bot@seatling.app"
+          git remote add origin "$GIT_REMOTE"
+
+          git checkout -b main
+          git add -A
+
+          # If triggered manually for main branch, mirror main directly without tags or release
+          if [ "$TARGET_REF" = "main" ]; then
+            git commit -m "sync: mirror main branch [automated]"
+            echo "Target is main branch: mirroring directly to main without creating tags or release..."
+            git push origin main --force
+            echo "Successfully mirrored main branch to seatling/sdk-go."
+            exit 0
+          fi
+
+          git commit -m "release: ${TARGET_REF} [automated]"
+
+          # Exclusively tag using the exact tag from the parent repository
+          git tag -f "${TARGET_REF}"
+          git push origin main "${TARGET_REF}" --force
+
+          # Trigger Go module proxy cache warming
+          curl -s "https://proxy.golang.org/github.com/seatling/sdk-go/@v/${TARGET_REF}.info" || true
+
+          # Create GitHub Release linking to the release in the general SDK repo
+          UPSTREAM_REPO="${GITHUB_REPOSITORY:-seatling/sdk-go}"
+          UPSTREAM_SERVER="${GITHUB_SERVER_URL:-https://github.com}"
+          UPSTREAM_RELEASE_URL="${UPSTREAM_SERVER}/${UPSTREAM_REPO}/releases/tag/${TARGET_REF}"
+          RELEASE_TITLE="Seatling Go SDK ${TARGET_REF}"
+          RELEASE_NOTES=$(printf "### Seatling Go SDK %s\n\nOfficial Golang client SDK for the Seatling licensing platform with zero dynamic library unpacking and monolithic CGO static linking.\n\n🔗 **Upstream Release**: [%s release %s](%s)\n\nFor full release notes, detailed changelogs, and core artifacts across all SDKs (Rust, Node.js/Electron, C++), see the [upstream release](%s)." "${TARGET_REF}" "${UPSTREAM_REPO}" "${TARGET_REF}" "${UPSTREAM_RELEASE_URL}" "${UPSTREAM_RELEASE_URL}")
+
+          echo "Creating GitHub Release for ${TARGET_REF} in seatling/sdk-go..."
+          TARGET_GH_TOKEN="${SEATLING_GO_TOKEN:-${GH_TOKEN}}"
+          if GH_TOKEN="${TARGET_GH_TOKEN}" gh release view "${TARGET_REF}" --repo seatling/sdk-go >/dev/null 2>&1; then
+            GH_TOKEN="${TARGET_GH_TOKEN}" gh release edit "${TARGET_REF}" --repo seatling/sdk-go --title "${RELEASE_TITLE}" --notes "${RELEASE_NOTES}"
+          else
+            GH_TOKEN="${TARGET_GH_TOKEN}" gh release create "${TARGET_REF}" --repo seatling/sdk-go --title "${RELEASE_TITLE}" --notes "${RELEASE_NOTES}"
+          fi

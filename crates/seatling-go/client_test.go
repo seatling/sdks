@@ -37,6 +37,20 @@ func TestConfigValidation(t *testing.T) {
 		t.Fatal("expected error for empty WorkspaceID")
 	}
 
+	// Non-alphanumeric / punctuation-only WorkspaceID
+	cfg = validTestConfig()
+	cfg.WorkspaceID = "..."
+	if _, err := seatling.New(cfg); err == nil {
+		t.Fatal("expected error for punctuation-only WorkspaceID")
+	}
+
+	// Overlong WorkspaceID (>128 chars)
+	cfg = validTestConfig()
+	cfg.WorkspaceID = string(make([]byte, 129))
+	if _, err := seatling.New(cfg); err == nil {
+		t.Fatal("expected error for overlong WorkspaceID")
+	}
+
 	// Missing ProductID
 	cfg = validTestConfig()
 	cfg.ProductID = ""
@@ -228,8 +242,21 @@ func TestClientLifecycle(t *testing.T) {
 	if _, err := client.Activate("SEAT-XXXX\x00YYYY"); err == nil {
 		t.Fatal("expected error for NUL byte in Activate licenseKey")
 	}
+	if _, err := client.ActivateDetailed("SEAT-XXXX\x00YYYY"); err == nil {
+		t.Fatal("expected error for NUL byte in ActivateDetailed licenseKey")
+	}
 
-	// 7. Multiple Close calls should be idempotent and subsequent operations return ErrClientClosed
+	// 7. Deactivate on clean client should succeed
+	deactOk, err := client.Deactivate()
+	if err != nil || !deactOk {
+		t.Fatalf("expected Deactivate() to succeed on clean client, got ok=%v, err=%v", deactOk, err)
+	}
+	deactDetailedOk, err := client.DeactivateWithTimeout(100*time.Millisecond, true)
+	if err != nil || !deactDetailedOk {
+		t.Fatalf("expected DeactivateWithTimeout() to succeed on clean client, got ok=%v, err=%v", deactDetailedOk, err)
+	}
+
+	// 8. Multiple Close calls should be idempotent and subsequent operations return ErrClientClosed
 	if err := client.Close(); err != nil {
 		t.Fatalf("first explicit Close failed: %v", err)
 	}
@@ -238,6 +265,12 @@ func TestClientLifecycle(t *testing.T) {
 	}
 	if status, err := client.Initialize(); !errors.Is(err, seatling.ErrClientClosed) || status != seatling.StatusNotActivated {
 		t.Fatalf("expected ErrClientClosed and StatusNotActivated after Close, got status=%v, err=%v", status, err)
+	}
+	if _, err := client.ActivateDetailed("SEAT-TEST-KEY"); !errors.Is(err, seatling.ErrClientClosed) {
+		t.Fatalf("expected ErrClientClosed for ActivateDetailed after Close, got err=%v", err)
+	}
+	if _, err := client.Deactivate(); !errors.Is(err, seatling.ErrClientClosed) {
+		t.Fatalf("expected ErrClientClosed for Deactivate after Close, got err=%v", err)
 	}
 }
 
