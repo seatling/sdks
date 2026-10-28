@@ -101,13 +101,12 @@ pub fn collect_macos() -> PlatformIdentifiers {
             cpu = normalize(std::env::consts::ARCH);
         }
 
-        // Disk volume identification using statfs (zero-prompt, no child subprocesses)
+        // Disk volume identification using statvfs (zero-prompt, no child subprocesses)
         let mut disk = None;
         unsafe {
-            let mut stat: libc::statfs = std::mem::zeroed();
-            let root_path = b"/\0";
-            if libc::statfs(root_path.as_ptr() as *const _, &mut stat) == 0 {
-                let fsid_str = format!("{:08x}:{:08x}", stat.f_fsid.val[0], stat.f_fsid.val[1]);
+            let mut stat: libc::statvfs = std::mem::zeroed();
+            if libc::statvfs(c"/".as_ptr(), &mut stat) == 0 {
+                let fsid_str = format!("{:08x}", stat.f_fsid);
                 disk = normalize(&fsid_str);
             }
         }
