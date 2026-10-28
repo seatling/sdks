@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.2.0](https://github.com/seatling/sdks/compare/node-v1.1.0...node-v1.2.0) (2026-10-28)
+
+
+### Features
+
+* add go sdk ([44d4467](https://github.com/seatling/sdks/commit/44d4467cd665dceeadf1b1eacb9633d68de64b53))
+
+
+### Bug Fixes
+
+* improve security and error handling ([641efb3](https://github.com/seatling/sdks/commit/641efb3da8db166c1c8821bab7ec32f70d87e94e))
+
 ## [1.1.0](https://github.com/seatling/sdks/compare/node-v1.0.0...node-v1.1.0) (2026-10-21)
 
 
