@@ -43,6 +43,9 @@ jobs:
             target: x86_64-pc-windows-msvc
             node_name: seatling.win32-x64-msvc.node
             artifact_name: seatling-windows-x64
+          - os: windows-latest
+            target: x86_64-pc-windows-gnu
+            artifact_name: seatling-windows-x64-gnu
           - os: macos-latest
             target: aarch64-apple-darwin
             node_name: seatling.darwin-arm64.node
@@ -55,6 +58,10 @@ jobs:
             target: x86_64-unknown-linux-gnu
             node_name: seatling.linux-x64-gnu.node
             artifact_name: seatling-linux-x64
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            node_name: seatling.linux-arm64-gnu.node
+            artifact_name: seatling-linux-arm64
 
     steps:
       - name: Checkout Code at Tag
@@ -71,6 +78,7 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }} -p seatling
 
       - name: Build Node N-API Addon
+        if: matrix.node_name != ''
         run: cargo build --release --target ${{ matrix.target }} -p seatling-node
 
       - name: Prepare Artifact Package
@@ -80,7 +88,10 @@ jobs:
           cp crates/seatling/include/seatling/* dist-pkg/include/seatling/
           cp LICENSE dist-pkg/LICENSE
           mkdir -p dist-pkg/lib
-          if [ "${{ runner.os }}" = "Windows" ]; then
+          if [ "${{ matrix.target }}" = "x86_64-pc-windows-gnu" ]; then
+            cp target/${{ matrix.target }}/release/libseatling.a dist-pkg/lib/
+            cp target/${{ matrix.target }}/release/seatling.dll dist-pkg/lib/
+          elif [ "${{ runner.os }}" = "Windows" ]; then
             cp target/${{ matrix.target }}/release/seatling.lib dist-pkg/lib/
             cp target/${{ matrix.target }}/release/seatling.dll dist-pkg/lib/
             cp target/${{ matrix.target }}/release/seatling_node.dll dist-pkg/${{ matrix.node_name }}

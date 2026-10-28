@@ -40,6 +40,8 @@ jobs:
           node-version: 22
 
       - name: Lint openapi.yaml
+        run: npx --yes @redocly/cli@1.25.1 lint openapi.yaml
+
       - name: Verify C Header Parity (C++ & Go SDKs)
         run: cmp -s crates/seatling/include/seatling/seatling.h crates/seatling-go/include/seatling.h
 
