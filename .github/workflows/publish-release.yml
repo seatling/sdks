@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       tag_name:
-        description: "Release git tag name (e.g., node-v1.1.0)"
+        description: "Release git tag name (e.g., v1.1.0)"
         required: true
         type: string
       version:
@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: "Release git tag name to publish (e.g., node-v1.1.0)"
+        description: "Release git tag name to publish (e.g., v1.1.0)"
         required: true
         type: string
       version:
@@ -41,26 +41,21 @@ jobs:
         include:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            node_name: seatling.win32-x64-msvc.node
             artifact_name: seatling-windows-x64
           - os: windows-latest
             target: x86_64-pc-windows-gnu
             artifact_name: seatling-windows-x64-gnu
           - os: macos-latest
             target: aarch64-apple-darwin
-            node_name: seatling.darwin-arm64.node
             artifact_name: seatling-macos-arm64
           - os: macos-latest
             target: x86_64-apple-darwin
-            node_name: seatling.darwin-x64.node
             artifact_name: seatling-macos-x64
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            node_name: seatling.linux-x64-gnu.node
             artifact_name: seatling-linux-x64
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-            node_name: seatling.linux-arm64-gnu.node
             artifact_name: seatling-linux-arm64
 
     steps:
@@ -68,6 +63,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag_name }}
+          fetch-depth: 1
 
       - name: Setup Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -76,10 +72,6 @@ jobs:
 
       - name: Build Core Staticlib & C-Dylib
         run: cargo build --release --target ${{ matrix.target }} -p seatling
-
-      - name: Build Node N-API Addon
-        if: matrix.node_name != ''
-        run: cargo build --release --target ${{ matrix.target }} -p seatling-node
 
       - name: Prepare Artifact Package
         shell: bash
@@ -94,15 +86,12 @@ jobs:
           elif [ "${{ runner.os }}" = "Windows" ]; then
             cp target/${{ matrix.target }}/release/seatling.lib dist-pkg/lib/
             cp target/${{ matrix.target }}/release/seatling.dll dist-pkg/lib/
-            cp target/${{ matrix.target }}/release/seatling_node.dll dist-pkg/${{ matrix.node_name }}
           elif [ "${{ runner.os }}" = "macOS" ]; then
             cp target/${{ matrix.target }}/release/libseatling.a dist-pkg/lib/
             cp target/${{ matrix.target }}/release/libseatling.dylib dist-pkg/lib/
-            cp target/${{ matrix.target }}/release/libseatling_node.dylib dist-pkg/${{ matrix.node_name }}
           else
             cp target/${{ matrix.target }}/release/libseatling.a dist-pkg/lib/
             cp target/${{ matrix.target }}/release/libseatling.so dist-pkg/lib/
-            cp target/${{ matrix.target }}/release/libseatling_node.so dist-pkg/${{ matrix.node_name }}
           fi
 
       - name: Upload Artifact
@@ -121,6 +110,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag_name }}
+          fetch-depth: 1
 
       - name: Download Artifacts
         uses: actions/download-artifact@v8
@@ -151,6 +141,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag_name }}
+          fetch-depth: 1
 
       - name: Setup Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
