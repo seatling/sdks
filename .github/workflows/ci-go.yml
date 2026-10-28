@@ -1,0 +1,96 @@
+name: CI — Go SDK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/ci-go.yml
+      - Cargo.toml
+      - Cargo.lock
+      - go.work
+      - scripts/run-go.js
+      - crates/seatling/Cargo.toml
+      - crates/seatling/src/**
+      - crates/seatling/include/seatling/seatling.h
+      - crates/seatling-go/**
+      - "!**/*.md"
+      - "!**/LICENSE"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/ci-go.yml
+      - Cargo.toml
+      - Cargo.lock
+      - go.work
+      - scripts/run-go.js
+      - crates/seatling/Cargo.toml
+      - crates/seatling/src/**
+      - crates/seatling/include/seatling/seatling.h
+      - crates/seatling-go/**
+      - "!**/*.md"
+      - "!**/LICENSE"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  go-sdk:
+    name: Go SDK / ${{ matrix.os }} (Go ${{ matrix.go-version }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        go-version: ["1.22", "1.23"]
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Verify C Header Parity (C++ & Go SDKs)
+        shell: bash
+        run: cmp -s crates/seatling/include/seatling/seatling.h crates/seatling-go/include/seatling.h
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.os == 'windows-latest' && 'x86_64-pc-windows-gnu' || '' }}
+
+      - name: Build Seatling Core Staticlib
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cargo build --release --target x86_64-pc-windows-gnu -p seatling
+          else
+            cargo build --release -p seatling
+          fi
+
+      - name: Setup Zig Compiler
+        uses: mlugg/setup-zig@v1
+        with:
+          version: 0.13.0
+
+      - name: Setup Go ${{ matrix.go-version }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+          cache: true
+          cache-dependency-path: crates/seatling-go/go.mod
+
+      - name: Lint Go (go vet via CGO)
+        run: node scripts/run-go.js vet ./...
+
+      - name: Run Go Test Suite (Static CGO)
+        run: node scripts/run-go.js test -v ./...
+
+      - name: Build Standalone Go Example Binary
+        run: node scripts/run-go.js build -o example_bin ./examples/main.go

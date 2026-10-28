@@ -1,0 +1,90 @@
+name: CI — Node.js SDK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/ci-node.yml
+      - Cargo.toml
+      - Cargo.lock
+      - package.json
+      - package-lock.json
+      - crates/seatling/Cargo.toml
+      - crates/seatling/src/**
+      - crates/seatling-node/**
+      - "!**/*.md"
+      - "!**/LICENSE"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/ci-node.yml
+      - Cargo.toml
+      - Cargo.lock
+      - package.json
+      - package-lock.json
+      - crates/seatling/Cargo.toml
+      - crates/seatling/src/**
+      - crates/seatling-node/**
+      - "!**/*.md"
+      - "!**/LICENSE"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  node-sdk:
+    name: Node SDK / ${{ matrix.os }} (Node ${{ matrix.node-version }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node-version: [lts/*]
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Rustfmt Check (Native N-API Layer)
+        run: cargo fmt -p seatling-node -- --check
+
+      - name: Clippy Linter (Native N-API Layer)
+        run: cargo clippy -p seatling-node --all-targets -- -D warnings
+
+      - name: Build Seatling Native Node Addon
+        run: cargo build --release -p seatling-node
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            crates/seatling-node/package-lock.json
+
+      - name: Install Node Dependencies
+        working-directory: crates/seatling-node
+        run: npm install
+
+      - name: Lint TypeScript
+        working-directory: crates/seatling-node
+        run: npm run lint
+
+      - name: Run Node Test Suite (Unit, Network, Edge & E2E)
+        working-directory: crates/seatling-node
+        run: npm test

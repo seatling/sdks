@@ -1,6 +1,9 @@
 # Seatling Client SDKs
 
-[![CI](https://github.com/seatling/seatling-sdks/actions/workflows/ci.yml/badge.svg)](https://github.com/seatling/seatling-sdks/actions/workflows/ci.yml)
+[![CI — Rust SDK](https://github.com/seatling/seatling-sdks/actions/workflows/ci-rust.yml/badge.svg)](https://github.com/seatling/seatling-sdks/actions/workflows/ci-rust.yml)
+[![CI — C++ SDK](https://github.com/seatling/seatling-sdks/actions/workflows/ci-cpp.yml/badge.svg)](https://github.com/seatling/seatling-sdks/actions/workflows/ci-cpp.yml)
+[![CI — Node.js SDK](https://github.com/seatling/seatling-sdks/actions/workflows/ci-node.yml/badge.svg)](https://github.com/seatling/seatling-sdks/actions/workflows/ci-node.yml)
+[![CI — Go SDK](https://github.com/seatling/seatling-sdks/actions/workflows/ci-go.yml/badge.svg)](https://github.com/seatling/seatling-sdks/actions/workflows/ci-go.yml)
 [![OpenAPI 3.1.0](https://img.shields.io/badge/OpenAPI-3.1.0-green.svg)](openapi.yaml)
 [![License: BSL 1.1](https://img.shields.io/badge/License-BSL_1.1-blue.svg)](LICENSE)
 

@@ -1,0 +1,76 @@
+name: CI — C++ SDK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/ci-cpp.yml
+      - Cargo.toml
+      - Cargo.lock
+      - crates/seatling/Cargo.toml
+      - crates/seatling/src/**
+      - crates/seatling/include/**
+      - crates/seatling/CMakeLists.txt
+      - crates/seatling/tests/cpp/**
+      - crates/seatling/examples/cpp/**
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/ci-cpp.yml
+      - Cargo.toml
+      - Cargo.lock
+      - crates/seatling/Cargo.toml
+      - crates/seatling/src/**
+      - crates/seatling/include/**
+      - crates/seatling/CMakeLists.txt
+      - crates/seatling/tests/cpp/**
+      - crates/seatling/examples/cpp/**
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  cpp-sdk:
+    name: C++ SDK / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Seatling Rust Staticlib
+        run: cargo build --release -p seatling
+
+      - name: Setup MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Setup CMake
+        uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: "3.28.x"
+
+      - name: Configure CMake
+        run: cmake -B build -S crates/seatling
+
+      - name: Build C++ Test Suite & Example
+        run: cmake --build build --config Release
+
+      - name: Run CTest Suite (Against Rust Staticlib)
+        run: ctest --test-dir build -C Release --output-on-failure

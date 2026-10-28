@@ -1,0 +1,62 @@
+name: CI — Rust SDK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/ci-rust.yml
+      - Cargo.toml
+      - Cargo.lock
+      - crates/seatling/Cargo.toml
+      - crates/seatling/src/**
+      - crates/seatling/tests/**
+      - "!crates/seatling/tests/cpp/**"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/ci-rust.yml
+      - Cargo.toml
+      - Cargo.lock
+      - crates/seatling/Cargo.toml
+      - crates/seatling/src/**
+      - crates/seatling/tests/**
+      - "!crates/seatling/tests/cpp/**"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  rust-sdk:
+    name: Rust Core / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    timeout-minutes: 10
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Rustfmt Check
+        run: cargo fmt -p seatling -- --check
+
+      - name: Clippy Linter
+        run: cargo clippy -p seatling --all-targets -- -D warnings
+
+      - name: Run Core Tests
+        run: cargo test -p seatling
