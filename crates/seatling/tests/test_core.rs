@@ -5,7 +5,8 @@ use seatling::jwt::{decode_and_verify_jwt, encode_eddsa_jwt, JwtHeader};
 use seatling::keystore::HardwareSealedKeystore;
 use seatling::storage::StorageManager;
 use seatling::types::{
-    ActivationPopClaims, HeartbeatChallengeClaims, LicenseJwtClaims, SeatlingConfig, StatusCode,
+    ActivationPopClaims, DeactivationClaims, HeartbeatChallengeClaims, LicenseJwtClaims,
+    SeatlingConfig, StatusCode,
 };
 use seatling::verifier::TokenVerifier;
 use seatling::SeatlingClient;
@@ -95,6 +96,9 @@ fn test_v6_keystore_sealing_and_jwt_signing() {
     assert_eq!(claims.hwid, "mock_hwid");
     assert_eq!(claims.supported_kids, vec!["ws_demo_2026_v1"]);
     assert_eq!(claims.jti, "test_nonce_pop");
+    assert_eq!(claims.iat, 1729382400);
+    assert_eq!(claims.nbf, 1729382400);
+    assert_eq!(claims.exp, 1729382400 + 300);
 
     // 2. Heartbeat Challenge JWT
     let hb_jwt = keystore
@@ -119,6 +123,31 @@ fn test_v6_keystore_sealing_and_jwt_signing() {
     assert_eq!(hb_claims.seat_id, "seat_01");
     assert_eq!(hb_claims.supported_kids, vec!["ws_demo_2026_v1"]);
     assert_eq!(hb_claims.jti, "test_nonce_hb");
+    assert_eq!(hb_claims.iat, 1729382400);
+    assert_eq!(hb_claims.nbf, 1729382400);
+    assert_eq!(hb_claims.exp, 1729382400 + 300);
+
+    // 3. Deactivation JWT
+    let deact_jwt = keystore.sign_deactivation(
+        "SEAT-1111",
+        "seat_01",
+        "mock_hwid",
+        "test_nonce_deact",
+        1729382400,
+    );
+    assert!(!deact_jwt.is_empty());
+
+    let (deact_header, deact_claims) =
+        decode_and_verify_jwt::<DeactivationClaims, _>(&deact_jwt, |_| Ok(device_vk))
+            .expect("verify Deactivation JWT");
+    assert_eq!(deact_header.typ, "seatling-deactivate+jwt");
+    assert_eq!(deact_claims.sub, "SEAT-1111");
+    assert_eq!(deact_claims.seat_id, "seat_01");
+    assert_eq!(deact_claims.hwid, "mock_hwid");
+    assert_eq!(deact_claims.jti, "test_nonce_deact");
+    assert_eq!(deact_claims.iat, 1729382400);
+    assert_eq!(deact_claims.nbf, 1729382400);
+    assert_eq!(deact_claims.exp, 1729382400 + 300);
 
     // Subsequent reload unseals identical key
     let keystore2 = HardwareSealedKeystore::load_or_generate(&storage);

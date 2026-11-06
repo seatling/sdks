@@ -90,6 +90,9 @@ describe('HardwareSealedKeystore', () => {
     assert.strictEqual(claims.jti, nonce);
     assert.strictEqual(claims.app_version, '1.0.0');
     assert.deepStrictEqual(claims.supported_kids, ['custom_kid_v1']);
+    assert.strictEqual(claims.iat, timestamp);
+    assert.strictEqual(claims.nbf, timestamp);
+    assert.strictEqual(claims.exp, timestamp + 300);
 
     const spkiDer = Buffer.concat([ED25519_SPKI_PREFIX, Buffer.from(pubKeyBase64, 'base64')]);
     const pubKeyObject = crypto.createPublicKey({ key: spkiDer, format: 'der', type: 'spki' });
@@ -121,6 +124,9 @@ describe('HardwareSealedKeystore', () => {
     assert.strictEqual(claims.seat_id, seatId);
     assert.strictEqual(claims.jti, nonce);
     assert.deepStrictEqual(claims.supported_kids, ['custom_kid_v1', 'custom_kid_v2']);
+    assert.strictEqual(claims.iat, timestamp);
+    assert.strictEqual(claims.nbf, timestamp);
+    assert.strictEqual(claims.exp, timestamp + 300);
 
     const spkiDer = Buffer.concat([ED25519_SPKI_PREFIX, Buffer.from(pubKeyBase64, 'base64')]);
     const pubKeyObject = crypto.createPublicKey({ key: spkiDer, format: 'der', type: 'spki' });
@@ -170,6 +176,8 @@ describe('HardwareSealedKeystore', () => {
     assert.strictEqual(deactClaims.hwid, hwid);
     assert.strictEqual(deactClaims.jti, 'nonce_deact');
     assert.strictEqual(deactClaims.iat, timestamp);
+    assert.strictEqual(deactClaims.nbf, timestamp);
+    assert.strictEqual(deactClaims.exp, timestamp + 300);
     const isDeactValid = crypto.verify(
       null,
       Buffer.from(`${deactParts[0]}.${deactParts[1]}`, 'utf8'),

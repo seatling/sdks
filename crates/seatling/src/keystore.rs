@@ -20,6 +20,7 @@ const HKDF_INFO_V2: &[u8] = b"seatling:hardware_sealed_ed25519_key_v2";
 
 pub const KEYSTORE_RECORD_V3_LEN: usize = 88;
 pub const KEYSTORE_RECORD_V4_LEN: usize = 104;
+pub const CLIENT_TOKEN_EXPIRATION_SECONDS: i64 = 300;
 
 #[inline]
 pub fn zeroize_slice(buf: &mut [u8]) {
@@ -579,6 +580,8 @@ impl HardwareSealedKeystore {
             attestation_tier: self.tier,
             supported_kids: supported_kids.to_vec(),
             iat: timestamp,
+            nbf: timestamp,
+            exp: timestamp.saturating_add(CLIENT_TOKEN_EXPIRATION_SECONDS),
             jti: nonce.to_string(),
         };
         encode_eddsa_jwt(&header, &claims, &self.signing_key)
@@ -608,6 +611,8 @@ impl HardwareSealedKeystore {
             app_version: app_version.to_string(),
             supported_kids: supported_kids.to_vec(),
             iat: timestamp,
+            nbf: timestamp,
+            exp: timestamp.saturating_add(CLIENT_TOKEN_EXPIRATION_SECONDS),
             jti: nonce.to_string(),
         };
         encode_eddsa_jwt(&header, &claims, &self.signing_key)
@@ -680,6 +685,8 @@ impl HardwareSealedKeystore {
             seat_id: seat_id.to_string(),
             hwid: hwid.to_string(),
             iat: timestamp,
+            nbf: timestamp,
+            exp: timestamp.saturating_add(CLIENT_TOKEN_EXPIRATION_SECONDS),
             jti: nonce.to_string(),
         };
         encode_eddsa_jwt(&header, &claims, &self.signing_key).unwrap_or_default()

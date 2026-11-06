@@ -75,6 +75,8 @@ export interface ActivationPopClaims {
   app_version: string;
   attestation_tier: AttestationTier;
   iat: number;
+  nbf: number;
+  exp: number;
   jti: string;
   supported_kids: string[];
 }
@@ -107,6 +109,8 @@ export interface HeartbeatChallengeClaims {
   session_id: string;
   app_version: string;
   iat: number;
+  nbf: number;
+  exp: number;
   jti: string;
   supported_kids: string[];
 }
@@ -122,6 +126,17 @@ export interface HeartbeatAckClaims {
   exp: number;
   jti: string;
   entitlements: Record<string, EntitlementValue>;
+}
+
+export interface DeactivationClaims {
+  iss: string;
+  sub: string;
+  seat_id: string;
+  hwid: string;
+  iat: number;
+  nbf: number;
+  exp: number;
+  jti: string;
 }
 
 export interface StoredKeystoreFile {

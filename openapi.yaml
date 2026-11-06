@@ -217,6 +217,8 @@ components:
         - app_version
         - attestation_tier
         - iat
+        - nbf
+        - exp
         - jti
         - supported_kids
       properties:
@@ -242,6 +244,15 @@ components:
         iat:
           type: integer
           format: int64
+          description: Token issuance timestamp in Unix seconds.
+        nbf:
+          type: integer
+          format: int64
+          description: Not-before validity timestamp in Unix seconds. Must equal iat. Required.
+        exp:
+          type: integer
+          format: int64
+          description: Expiration timestamp in Unix seconds. Must satisfy 0 < (exp - iat) <= 300 (5 minutes max replay window). Required.
         jti:
           type: string
         supported_kids:
@@ -262,6 +273,8 @@ components:
         - session_id
         - app_version
         - iat
+        - nbf
+        - exp
         - jti
         - supported_kids
       properties:
@@ -289,6 +302,15 @@ components:
         iat:
           type: integer
           format: int64
+          description: Token issuance timestamp in Unix seconds.
+        nbf:
+          type: integer
+          format: int64
+          description: Not-before validity timestamp in Unix seconds. Must equal iat. Required.
+        exp:
+          type: integer
+          format: int64
+          description: Expiration timestamp in Unix seconds. Must satisfy 0 < (exp - iat) <= 300 (5 minutes max replay window). Required.
         jti:
           type: string
           description: Random challenge nonce.
@@ -418,6 +440,8 @@ components:
         - seat_id
         - hwid
         - iat
+        - nbf
+        - exp
         - jti
       properties:
         iss:
@@ -434,6 +458,15 @@ components:
         iat:
           type: integer
           format: int64
+          description: Token issuance timestamp in Unix seconds.
+        nbf:
+          type: integer
+          format: int64
+          description: Not-before validity timestamp in Unix seconds. Must equal iat. Required.
+        exp:
+          type: integer
+          format: int64
+          description: Expiration timestamp in Unix seconds. Must satisfy 0 < (exp - iat) <= 300 (5 minutes max replay window). Required.
         jti:
           type: string
           description: Random deactivation challenge nonce.

@@ -18,5 +18,6 @@ export {
   LicenseJwtClaims,
   HeartbeatChallengeClaims,
   HeartbeatAckClaims,
+  DeactivationClaims,
   StoredKeystoreFile,
 } from './types';

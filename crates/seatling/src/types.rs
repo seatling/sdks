@@ -125,6 +125,8 @@ pub struct ActivationPopClaims {
     pub attestation_tier: AttestationTier,
     pub supported_kids: Vec<String>,
     pub iat: i64,
+    pub nbf: i64,
+    pub exp: i64,
     pub jti: String, // Nonce CSPRNG
 }
 
@@ -172,6 +174,8 @@ pub struct HeartbeatChallengeClaims {
     pub app_version: String,
     pub supported_kids: Vec<String>,
     pub iat: i64,
+    pub nbf: i64,
+    pub exp: i64,
     pub jti: String, // Nonce CSPRNG
 }
 
@@ -199,6 +203,8 @@ pub struct DeactivationClaims {
     pub seat_id: String,
     pub hwid: String,
     pub iat: i64,
+    pub nbf: i64,
+    pub exp: i64,
     pub jti: String, // Nonce CSPRNG
 }
 
