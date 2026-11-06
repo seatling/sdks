@@ -12,7 +12,7 @@
     "url": "git+https://github.com/seatling/sdks.git"
   },
   "files": [
-    "dist",
+    "dist/src",
     "seatling.node",
     "README.md",
     "LICENSE"
@@ -20,7 +20,7 @@
   "scripts": {
     "copy:native": "node scripts/copy-native.js",
     "build:native": "cargo build --release -p seatling-node && node scripts/copy-native.js",
-    "build": "node scripts/copy-native.js && tsc",
+    "build": "npm run clean && node scripts/copy-native.js && tsc -p tsconfig.build.json",
     "watch": "tsc --watch",
     "test": "node scripts/copy-native.js && tsc && node --test dist/test/*.test.js",
     "test:unit": "node scripts/copy-native.js && tsc && node --test dist/test/hwid.test.js dist/test/keystore.test.js",
