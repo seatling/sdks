@@ -20,6 +20,7 @@ pub struct SeatlingClient {
     worker_handle: parking_lot_or_mutex_handle::WorkerHandle,
     session_id: String,
     supported_kids: Vec<String>,
+    #[cfg(feature = "test-clock")]
     time_source: Option<Arc<dyn Fn() -> i64 + Send + Sync>>,
 }
 
@@ -221,10 +222,12 @@ impl SeatlingClient {
             worker_handle: parking_lot_or_mutex_handle::WorkerHandle(Mutex::new(None)),
             session_id,
             supported_kids,
+            #[cfg(feature = "test-clock")]
             time_source: None,
         })
     }
 
+    #[cfg(feature = "test-clock")]
     pub fn with_time_source(mut self, ts: Arc<dyn Fn() -> i64 + Send + Sync>) -> Self {
         self.time_source = Some(ts);
         self
@@ -241,11 +244,11 @@ impl SeatlingClient {
     }
 
     fn now_unix(&self) -> i64 {
+        #[cfg(feature = "test-clock")]
         if let Some(ref ts) = self.time_source {
-            ts()
-        } else {
-            Self::current_unix_time()
+            return ts();
         }
+        Self::current_unix_time()
     }
 
     pub fn compute_app_fingerprint(app_version: &str, supported_kids: &[String]) -> [u8; 8] {
@@ -1434,6 +1437,7 @@ impl SeatlingClient {
         let cache = Arc::clone(&self.cache);
         let custom_keys = self.config.public_keys.clone();
         let supported_kids = self.supported_kids.clone();
+        #[cfg(feature = "test-clock")]
         let time_source = self.time_source.clone();
 
         let handle = thread::spawn(move || {
@@ -1443,11 +1447,11 @@ impl SeatlingClient {
             };
 
             let get_now = || -> i64 {
+                #[cfg(feature = "test-clock")]
                 if let Some(ref ts) = time_source {
-                    ts()
-                } else {
-                    Self::current_unix_time()
+                    return ts();
                 }
+                Self::current_unix_time()
             };
 
             let tick_duration = Duration::from_secs(60);
@@ -1774,11 +1778,27 @@ impl SeatlingClient {
         }
     }
 
+    #[inline(always)]
+    fn get_test_clock_offset() -> i64 {
+        #[cfg(feature = "test-clock")]
+        {
+            std::env::var("SEATLING_CLOCK_OFFSET_SECONDS")
+                .ok()
+                .and_then(|val| val.parse::<i64>().ok())
+                .unwrap_or(0)
+        }
+        #[cfg(not(feature = "test-clock"))]
+        {
+            0
+        }
+    }
+
     fn current_unix_time() -> i64 {
-        SystemTime::now()
+        let base = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
-            .unwrap_or(0)
+            .unwrap_or(0);
+        base.saturating_add(Self::get_test_clock_offset())
     }
 }
 

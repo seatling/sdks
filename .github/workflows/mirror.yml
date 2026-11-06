@@ -105,6 +105,7 @@ jobs:
             cp native-artifacts/seatling-linux-arm64/lib/libseatling.a go-release/lib/linux_arm64/libseatling.a
           else
             echo "Notice: Compiling staticlib locally for verification (${TARGET_REF})..."
+            # Production release build: strictly omit test-clock feature
             cargo build --release -p seatling
             cp target/release/libseatling.a go-release/lib/linux_amd64/libseatling.a
             cp target/release/libseatling.a go-release/lib/windows_amd64/libseatling.a

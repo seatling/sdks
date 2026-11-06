@@ -4,3 +4,9 @@ members = [
     "crates/seatling",
     "crates/seatling-node",
 ]
+
+[profile.dev]
+debug-assertions = true
+
+[profile.release]
+debug-assertions = false

@@ -612,7 +612,13 @@ fn test_client_deactivate_network_failure_and_force() {
     let _ = std::fs::create_dir_all(&tmp_dir);
 
     let server = MockHttpServer::start();
+    #[cfg(feature = "test-clock")]
     let now = 1730000000;
+    #[cfg(not(feature = "test-clock"))]
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
 
     let mut seed = [0u8; 32];
     seed[0] = 77;
@@ -633,9 +639,9 @@ fn test_client_deactivate_network_failure_and_force() {
         storage_dir: Some(tmp_dir.to_str().unwrap().to_string()),
     };
 
-    let client = SeatlingClient::new(config)
-        .unwrap()
-        .with_time_source(std::sync::Arc::new(move || now));
+    let client = SeatlingClient::new(config).unwrap();
+    #[cfg(feature = "test-clock")]
+    let client = client.with_time_source(std::sync::Arc::new(move || now));
 
     let storage = seatling::storage::StorageManager::new(
         "ws_net_rust",

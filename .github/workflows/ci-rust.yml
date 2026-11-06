@@ -58,5 +58,8 @@ jobs:
       - name: Clippy Linter
         run: cargo clippy -p seatling --all-targets -- -D warnings
 
-      - name: Run Core Tests
+      - name: Run Core Tests (Production Configuration)
         run: cargo test -p seatling
+
+      - name: Run Core Tests (Test-Clock Feature Enabled)
+        run: cargo test -p seatling --features test-clock

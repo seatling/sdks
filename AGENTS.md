@@ -162,6 +162,54 @@ Always scope validations to the smallest affected blast radius. Do **not** run b
    - Workspace signing keys are isolated. SDK initialization requires explicit public key mappings (`public_keys: { "<kid>": "<base64/base64url>" }`). Fails fast with `StatusCode::TamperOrSignatureInvalid` if keys are missing or invalid.
 4. **Weighted Hardware Quorum**:
    - Hardware matching requires a fuzzy quorum score `>= 70` (Mobo = 35 pts, CPU = 25 pts, Disk = 20 pts, OS UUID = 20 pts). Motherboard swaps fail verification; individual component upgrades pass seamlessly.
+5. **Debug Flags, Test Hooks & Feature Gating Invariant**:
+   - **Zero Secret/Bypass Leakage in Production**: Testing hooks, debug flags, time-travel mechanisms (e.g. `SEATLING_CLOCK_OFFSET_SECONDS`), and mock anchors **MUST NEVER be implicit or accessible in production release builds**.
+   - **Feature-Gated Isolation**: All test and debug flags must be strictly hidden behind explicit Cargo features (e.g. `test-clock` or `test-support`). In release builds without the feature, the code MUST be dead-code eliminated by LLVM, leaving zero references to `std::env::var` in production binaries.
+   - **Files to Configure & Update**:
+     1. `crates/seatling/Cargo.toml`:
+        - Declare the test feature under `[features]`:
+          ```toml
+          [features]
+          default = []
+          test-clock = [] # Test-only time simulation. MUST NEVER be enabled for production release builds!
+          ```
+        - Declare build profile assertions:
+          ```toml
+          [profile.dev]
+          debug-assertions = true
+
+          [profile.release]
+          debug-assertions = false
+          ```
+     2. Rust Core Source Files (`crates/seatling/src/client.rs`, `crates/seatling/src/keystore.rs`):
+        - Gate test-only overrides:
+          ```rust
+          #[inline(always)]
+          fn get_test_clock_offset() -> i64 {
+              #[cfg(feature = "test-clock")]
+              {
+                  std::env::var("SEATLING_CLOCK_OFFSET_SECONDS")
+                      .ok()
+                      .and_then(|val| val.parse::<i64>().ok())
+                      .unwrap_or(0)
+              }
+              #[cfg(not(feature = "test-clock"))]
+              {
+                  0
+              }
+          }
+          ```
+     3. Build Files & Artifact Distribution:
+        - **Production Release Artifacts (`prod`)**:
+          - Rust Core: `cargo build --release -p seatling`
+          - Go CGO (Windows): `cargo build --release --target x86_64-pc-windows-gnu -p seatling`
+          - Copy static library to `crates/seatling-go/lib/<target>/libseatling.a`.
+          - *Result*: Feature `test-clock` is omitted; environment variable lookups do not exist in the binary.
+        - **Non-Production & Automated E2E Testing (`testing` / `nonprod`)**:
+          - Rust Core: `cargo build --release --features test-clock -p seatling`
+          - Go CGO (Windows): `cargo build --release --target x86_64-pc-windows-gnu --features test-clock -p seatling`
+          - Copy static library to `crates/seatling-go/lib/<target>/libseatling.a` before running E2E suites.
+          - *Result*: Test suites can safely test clock rollback and tamper detection via `os.Setenv("SEATLING_CLOCK_OFFSET_SECONDS", "-350")` without changing OS system clocks.
 
 ---
 

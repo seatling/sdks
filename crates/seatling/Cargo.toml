@@ -14,6 +14,12 @@ publish = false
 name = "seatling"
 crate-type = ["rlib", "staticlib", "cdylib"]
 
+[features]
+default = []
+# test-clock enables test-only time simulation via SEATLING_CLOCK_OFFSET_SECONDS.
+# CRITICAL SECURITY INVARIANT: MUST NEVER be enabled in production release builds.
+test-clock = []
+
 [dependencies]
 ed25519-dalek = { version = "3.0", features = ["rand_core"] }
 rand = "0.10"

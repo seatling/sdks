@@ -538,11 +538,27 @@ impl HardwareSealedKeystore {
         okm
     }
 
+    #[inline(always)]
+    fn get_test_clock_offset() -> i64 {
+        #[cfg(feature = "test-clock")]
+        {
+            std::env::var("SEATLING_CLOCK_OFFSET_SECONDS")
+                .ok()
+                .and_then(|val| val.parse::<i64>().ok())
+                .unwrap_or(0)
+        }
+        #[cfg(not(feature = "test-clock"))]
+        {
+            0
+        }
+    }
+
     fn current_unix_time() -> i64 {
-        std::time::SystemTime::now()
+        let base = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
-            .unwrap_or(0)
+            .unwrap_or(0);
+        base.saturating_add(Self::get_test_clock_offset())
     }
 
     pub fn public_key_base64(&self) -> String {

@@ -70,7 +70,10 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Build Core Staticlib & C-Dylib
+      # CRITICAL SECURITY INVARIANT:
+      # Production release builds MUST NEVER enable 'test-clock' or debug testing hooks.
+      # When omitted, testing environment variables (e.g. SEATLING_CLOCK_OFFSET_SECONDS) are dead-code eliminated.
+      - name: Build Core Staticlib & C-Dylib (Production Release - Zero Debug Leakage)
         run: cargo build --release --target ${{ matrix.target }} -p seatling
 
       - name: Prepare Artifact Package
@@ -146,7 +149,8 @@ jobs:
       - name: Setup Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Build Native Addon
+      # CRITICAL SECURITY INVARIANT: Production release builds must not enable test-clock
+      - name: Build Native Addon (Production Release - Zero Debug Leakage)
         run: cargo build --release -p seatling-node
 
       - name: Setup Node.js

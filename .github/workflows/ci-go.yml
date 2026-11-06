@@ -65,13 +65,13 @@ jobs:
         with:
           targets: ${{ matrix.os == 'windows-latest' && 'x86_64-pc-windows-gnu' || '' }}
 
-      - name: Build Seatling Core Staticlib
+      - name: Build Seatling Core Staticlib (Test Support Enabled)
         shell: bash
         run: |
           if [ "${{ runner.os }}" = "Windows" ]; then
-            cargo build --release --target x86_64-pc-windows-gnu -p seatling
+            cargo build --release --target x86_64-pc-windows-gnu --features test-clock -p seatling
           else
-            cargo build --release -p seatling
+            cargo build --release --features test-clock -p seatling
           fi
 
       - name: Setup Zig Compiler
